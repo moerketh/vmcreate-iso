@@ -1,0 +1,5 @@
+chroot/
+image/
+vmcreate.iso
+vmcreate-*.iso
+.sisyphus/*

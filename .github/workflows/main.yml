@@ -1,0 +1,88 @@
+name: Build vmcreate ISO
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Install ShellCheck
+        run: sudo apt-get install -y shellcheck
+      - name: Run ShellCheck
+        run: shellcheck -S error autorun/*.sh lib/*.sh build.sh chroot_setup.sh
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Install BATS
+        run: sudo apt-get install -y bats
+      - name: Run tests
+        run: bats test/
+
+  build:
+    runs-on: ubuntu-latest
+    needs: [lint, test]
+    permissions:
+      actions: write
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y debootstrap squashfs-tools xorriso grub-pc-bin grub-efi-amd64-bin grub-efi-amd64-signed shim-signed syslinux syslinux-common mtools dosfstools isolinux genisoimage
+      - name: Run build script
+        run: bash build.sh
+      - name: Determine version and filenames
+        id: version
+        run: |
+          VERSION=$(cat VERSION | tr -d '[:space:]')
+          ISO_NAME="vmcreate-${VERSION}.iso"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "iso_name=$ISO_NAME" >> $GITHUB_OUTPUT
+      - name: Generate SHA256 checksum
+        run: sha256sum ${{ steps.version.outputs.iso_name }} > ${{ steps.version.outputs.iso_name }}.sha256
+      - name: Delete old artifacts
+        if: github.ref_type == 'branch'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: { artifacts } } = await github.rest.actions.listArtifactsForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              per_page: 100,
+            });
+            for (const artifact of artifacts) {
+              console.log(`Deleting artifact: ${artifact.name} (${artifact.id})`);
+              await github.rest.actions.deleteArtifact({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                artifact_id: artifact.id,
+              });
+            }
+
+      - name: Upload ISO and checksum as artifact
+        if: github.ref_type == 'branch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: vmcreate-iso-${{ steps.version.outputs.version }}
+          retention-days: 5
+          path: |
+            ${{ steps.version.outputs.iso_name }}
+            ${{ steps.version.outputs.iso_name }}.sha256
+      - name: Create release and upload ISO with checksum
+        if: github.ref_type == 'tag'
+        uses: ncipollo/release-action@v1
+        with:
+          artifacts: ${{ steps.version.outputs.iso_name }},${{ steps.version.outputs.iso_name }}.sha256
+          generateReleaseNotes: false

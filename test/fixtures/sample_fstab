@@ -1,0 +1,8 @@
+# Sample fstab for testing update_fstab function
+# Contains typical entries with UUIDs and separate /boot partition
+UUID=abcd1234-abcd-1234-abcd-123456789abc / ext4 defaults,errors=remount-ro 0 1
+UUID=efgh5678-efgh-5678-efgh-567890123456 /boot ext4 defaults 0 2
+UUID=ijkl9012-ijkl-9012-ijkl-901234567890 /boot/efi vfat umask=0077,shortname=winnt 0 2
+tmpfs /tmp tmpfs defaults 0 0
+proc /proc proc defaults 0 0
+sysfs /sys sysfs defaults 0 0
