@@ -71,31 +71,32 @@ if [ -d "$KMOD_DIR/kernel" ]; then
     echo "Kernel module stripping complete."
 fi
 
-# ── Assert the multi-hypervisor module whitelist survived ────────────
-# The transport (hv_sock) and the storage drivers VMCreate relies on when
-# driving a clone must exist in the image — as a module file or built into
-# the kernel. Fail the build loudly instead of producing an ISO that boots
+# ── Assert the multi-hypervisor driver whitelist survived ───────────
+# The transport (hv_sock) and the storage/net drivers VMCreate relies on
+# must exist in the image — either as a module file or built into vmlinuz
+# (noble ships no /boot/config-*; modules.builtin is the authority for
+# built-ins). Fail the build loudly instead of producing an ISO that boots
 # but can't be driven or can't see disks.
 KVER_SHORT=$(basename "$KMOD_DIR")
-KERNEL_CONFIG="/boot/config-${KVER_SHORT}"
-assert_driver() {
-    local cfg="$1" ko="$2"
-    if [ -f "$KERNEL_CONFIG" ] && grep -q "^${cfg}=y" "$KERNEL_CONFIG"; then
-        return 0
-    fi
-    if [ -n "$(find /lib/modules/$KVER_SHORT -name "$ko" 2>/dev/null)" ]; then
-        return 0
-    fi
-    echo "ERROR: required driver $cfg ($ko) not built in and not a module" >&2
-    exit 1
+driver_ok() {
+    local name="$1"
+    [ -n "$(find /lib/modules/$KVER_SHORT -name "$name*" 2>/dev/null)" ] && return 0
+    grep -q "/$name" /lib/modules/$KVER_SHORT/modules.builtin 2>/dev/null && return 0
+    return 1
 }
-assert_driver CONFIG_HYPERV_VSOCKETS "hv_sock.ko*"          # AF_VSOCK transport on Hyper-V (vsock SSH)
-assert_driver CONFIG_SCSI_STORVSC    "storvsc.ko*"          # Hyper-V SCSI (disks on Gen 1/2)
-assert_driver CONFIG_HYPERV_NET      "hv_netvsc.ko*"        # Hyper-V synthetic NIC
-assert_driver CONFIG_VIRTIO_BLK     "virtio_blk.ko*"       # KVM disks
-assert_driver CONFIG_SCSI_VIRTIO    "virtio_scsi.ko*"
-assert_driver CONFIG_VIRTIO_NET     "virtio_net.ko*"
-assert_driver CONFIG_VIRTIO_VSOCKETS "vsock_virtio*.ko*"   # AF_VSOCK transport on KVM
+assert_driver() {
+    if ! driver_ok "$1"; then
+        echo "ERROR: required driver $1 neither built in nor present as a module" >&2
+        exit 1
+    fi
+}
+assert_driver "hv_sock.ko"                      # AF_VSOCK transport on Hyper-V (vsock SSH)
+assert_driver "hv_storvsc.ko"                   # Hyper-V SCSI (disks on Gen 1/2)
+assert_driver "hv_netvsc.ko"                    # Hyper-V synthetic NIC
+assert_driver "virtio_blk.ko"                   # KVM disks (built-in on noble)
+assert_driver "virtio_scsi.ko"
+assert_driver "virtio_net.ko"
+assert_driver "vmw_vsock_virtio_transport.ko"   # AF_VSOCK transport on KVM
 echo "Multi-hypervisor driver whitelist OK."
 
 # Purge linux-firmware — Hyper-V uses synthetic drivers, no firmware blobs needed
