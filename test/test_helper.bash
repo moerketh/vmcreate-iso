@@ -19,9 +19,9 @@ teardown() {
     if [[ -n "$TEST_TEMP_DIR" && -d "$TEST_TEMP_DIR" ]]; then
         rm -rf "$TEST_TEMP_DIR"
     fi
-    }
+}
 
-    # Don't auto-load functions.sh in test helper to avoid sourcing conflicts
+# Don't auto-load functions.sh in test helper to avoid sourcing conflicts
 # Individual test files can source functions.sh if needed
 
 # Common utility functions for testing

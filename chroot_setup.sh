@@ -140,18 +140,24 @@ apt-get install -y --no-install-recommends tor
 # OpenSSH itself has no vsock listener support — systemd provides it.
 # hv_sock (the AF_VSOCK transport on Hyper-V) is loaded explicitly via
 # modules-load.d; never rely on autoload ordering at early boot.
-# There is deliberately NO TCP sshd: the only way in is the host-private
-# vsock channel. Auth bootstrap: the host writes the SSH public key via
-# KVP right after VM start; inject_ssh_key.sh (autorun/) installs it
-# before sessions are accepted. Password auth is disabled.
+# There is deliberately NO TCP sshd: openssh-server's postinst enables
+# ssh.socket (0.0.0.0:22) on fresh installs by itself, so merely not
+# enabling it is not enough — both units are masked, and the assert below
+# fails the build if either ever comes back. The only way in is the
+# host-private vsock channel.
 apt-get install -y --no-install-recommends openssh-server
 # Disable password auth — key-only access via KVP-injected pubkey
 sed -i 's/^#\?PasswordAuthentication .*/PasswordAuthentication no/' /etc/ssh/sshd_config
 sed -i 's/^#\?PubkeyAuthentication .*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
 sed -i 's/^#\?PermitRootLogin .*/PermitRootLogin no/' /etc/ssh/sshd_config
+systemctl mask ssh.socket ssh.service
 
-# Explicitly load the Hyper-V vsock transport at boot (the AF_VSOCK socket
-# unit below depends on it; autoload may fire too late or not at all).
+# Host keys are generated per boot, not baked into the ISO — otherwise
+# every published ISO would carry the same private keys.
+rm -f /etc/ssh/ssh_host_*
+
+# Load the Hyper-V vsock transport explicitly (the AF_VSOCK socket unit
+# depends on it; autoload may fire too late or not at all at early boot).
 echo "hv_sock" > /etc/modules-load.d/hv_sock.conf
 
 # Install the systemd units from guest/ (first-class files so CI can
@@ -162,6 +168,23 @@ install -m 644 /tmp/guest/inject-ssh-key.service   /etc/systemd/system/
 install -m 644 /tmp/guest/vmcreate-sshd.conf       /usr/lib/tmpfiles.d/
 systemctl enable sshd-vsock.socket 2>/dev/null || true
 systemctl enable inject-ssh-key.service 2>/dev/null || true
+
+# ── Build-time assertions ────────────────────────────────────────────
+# TCP sshd must stay dead: openssh-server's postinst enables ssh.socket
+# on fresh installs, and a "deliberately not enabled" comment is not a
+# guarantee. Fail the build if either unit is anything but masked.
+for unit in ssh.socket ssh.service; do
+    state=$(systemctl is-enabled "$unit" 2>/dev/null || true)
+    [ "$state" = "masked" ] || {
+        echo "ERROR: TCP sshd unit $unit is '$state' (want masked)" >&2
+        exit 1
+    }
+done
+# No baked-in SSH host keys (they are generated per boot at first session).
+[ -z "$(ls /etc/ssh/ssh_host_* 2>/dev/null)" ] || {
+    echo "ERROR: SSH host keys leaked into the image" >&2
+    exit 1
+}
 
 # User setup — vmcreate user (matches SshGuestShell's default
 # AutomationUser, so VMCreate needs no explicit username). Key-only auth,

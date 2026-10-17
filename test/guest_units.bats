@@ -36,6 +36,21 @@ load 'test_helper'
     grep -q '^StandardInput=socket$' "$PROJECT_ROOT/guest/sshd-vsock@.service"
 }
 
+@test "session service generates missing host keys before sshd starts" {
+    grep -q '^ExecStartPre=/usr/bin/ssh-keygen -A$' "$PROJECT_ROOT/guest/sshd-vsock@.service"
+}
+
+@test "build masks TCP sshd and asserts it stays masked" {
+    grep -q '^systemctl mask ssh.socket ssh.service$' "$PROJECT_ROOT/chroot_setup.sh"
+    grep -q "for unit in ssh.socket ssh.service" "$PROJECT_ROOT/chroot_setup.sh"
+    grep -q 'ERROR: TCP sshd unit' "$PROJECT_ROOT/chroot_setup.sh"
+}
+
+@test "build deletes host keys and asserts none leak into the image" {
+    grep -q '^rm -f /etc/ssh/ssh_host_\*$' "$PROJECT_ROOT/chroot_setup.sh"
+    grep -q 'ERROR: SSH host keys leaked' "$PROJECT_ROOT/chroot_setup.sh"
+}
+
 @test "tmpfiles entry creates /run/sshd for sshd -i" {
     grep -q '^d /run/sshd 0755 root root -$' "$PROJECT_ROOT/guest/vmcreate-sshd.conf"
 }

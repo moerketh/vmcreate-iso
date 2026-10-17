@@ -40,16 +40,26 @@ jobs:
         run: systemctl --version | head -1
       - name: Verify guest units with systemd-analyze
         run: |
-          # systemd-analyze verify exits non-zero on real errors (unknown
-          # key types, ordering cycles, unparseable directives). Missing
-          # companion units (hv-kvp-daemon.service) are warnings only.
+          # verify alone catches parse errors and unknown directives; note
+          # it exits 0 even when it reports an ordering cycle, so the
+          # cycle detection below is a separate, explicit check.
+          cp guest/* /tmp/ && cd /tmp
           systemd-analyze verify \
-            guest/sshd-vsock.socket \
-            guest/sshd-vsock@.service \
-            guest/inject-ssh-key.service
-      - name: Fail on ordering cycles even if verify exits zero
+            sshd-vsock.socket \
+            sshd-vsock@.service \
+            inject-ssh-key.service || {
+              echo "systemd-analyze verify reported errors" >&2
+              exit 1
+            }
+      - name: Fail on ordering cycles in the boot graph
         run: |
-          out=$(systemd-analyze verify guest/*.socket guest/*.service 2>&1 || true)
+          # Verifying units one at a time never pulls in basic.target and
+          # sockets.target, so the cycle the old units had could not form.
+          # This test-only target drags the boot graph in; units sit in
+          # the same directory so verify resolves them.
+          cp guest/* /tmp/ && cd /tmp
+          printf '[Unit]\nWants=basic.target sockets.target sshd-vsock.socket inject-ssh-key.service\n' > cycle-check.target
+          out=$(systemd-analyze verify cycle-check.target *.socket *.service 2>&1 || true)
           echo "$out"
           ! echo "$out" | grep -qi 'ordering cycle'
 
