@@ -89,13 +89,13 @@ assert_driver() {
     echo "ERROR: required driver $cfg ($ko) not built in and not a module" >&2
     exit 1
 }
-assert_driver CONFIG_HYPERV_VSOCKETS "hv_sock.ko*"       # AF_VSOCK transport on Hyper-V (vsock SSH)
-assert_driver CONFIG_HYPERV_STORAGE "storvsc.ko*"        # Hyper-V SCSI (disks on Gen 1/2)
-assert_driver CONFIG_HYPERV_NET     "hv_netvsc.ko*"      # Hyper-V synthetic NIC
-assert_driver CONFIG_VIRTIO_BLK     "virtio_blk.ko*"     # KVM disks
+assert_driver CONFIG_HYPERV_VSOCKETS "hv_sock.ko*"          # AF_VSOCK transport on Hyper-V (vsock SSH)
+assert_driver CONFIG_SCSI_STORVSC    "storvsc.ko*"          # Hyper-V SCSI (disks on Gen 1/2)
+assert_driver CONFIG_HYPERV_NET      "hv_netvsc.ko*"        # Hyper-V synthetic NIC
+assert_driver CONFIG_VIRTIO_BLK     "virtio_blk.ko*"       # KVM disks
 assert_driver CONFIG_SCSI_VIRTIO    "virtio_scsi.ko*"
 assert_driver CONFIG_VIRTIO_NET     "virtio_net.ko*"
-assert_driver CONFIG_VIRTIO_VSOCKETS "vsock_virtio.ko*"  # AF_VSOCK transport on KVM
+assert_driver CONFIG_VIRTIO_VSOCKETS "vsock_virtio*.ko*"   # AF_VSOCK transport on KVM
 echo "Multi-hypervisor driver whitelist OK."
 
 # Purge linux-firmware — Hyper-V uses synthetic drivers, no firmware blobs needed
