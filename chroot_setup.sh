@@ -18,12 +18,13 @@ dbus-uuidgen > /var/lib/dbus/machine-id
 # Install kernel, live tools, and necessary packages
 # Resolve the specific kernel version from the linux-virtual meta-package
 # (multi-hypervisor: virtio + Hyper-V + VMware drivers) so we can install
-# only the image, modules and cloud-tools — skipping the bulky linux-headers
-# and linux-tools that the meta-package pulls in (~150 MB saved).
-# linux-virtual → linux-image-virtual → linux-image-X.Y.Z-N-virtual
+# only the image, modules and cloud-tools — skipping the bulky linux-headers,
+# linux-tools and linux-modules-extra that the meta-package family pulls in.
+# On noble, linux-virtual → linux-image-<ver>-generic in ONE hop, and the
+# flavor suffix is whatever apt picked — don't hardcode it.
 KVER=$(apt-cache depends linux-image-virtual 2>/dev/null \
-    | grep -o 'linux-image-[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*-[0-9][0-9]*-virtual' \
-    | sed 's/^linux-image-//' | head -1)
+    | grep -o 'linux-image-[0-9][0-9.]*-[0-9][0-9]*-[a-z][a-z0-9]*' \
+    | head -1 | sed 's/^linux-image-//')
 if [ -z "$KVER" ]; then
     echo "ERROR: Could not resolve kernel version from linux-image-virtual" >&2
     exit 1
@@ -88,8 +89,8 @@ assert_driver() {
     echo "ERROR: required driver $cfg ($ko) not built in and not a module" >&2
     exit 1
 }
-assert_driver CONFIG_HYPERV_VSOCK   "hv_sock.ko*"        # AF_VSOCK transport on Hyper-V (vsock SSH)
-assert_driver CONFIG_HYPERV_STORAGE "hv_storvsc.ko*"     # Hyper-V SCSI (disks on Gen 1/2)
+assert_driver CONFIG_HYPERV_VSOCKETS "hv_sock.ko*"       # AF_VSOCK transport on Hyper-V (vsock SSH)
+assert_driver CONFIG_HYPERV_STORAGE "storvsc.ko*"        # Hyper-V SCSI (disks on Gen 1/2)
 assert_driver CONFIG_HYPERV_NET     "hv_netvsc.ko*"      # Hyper-V synthetic NIC
 assert_driver CONFIG_VIRTIO_BLK     "virtio_blk.ko*"     # KVM disks
 assert_driver CONFIG_SCSI_VIRTIO    "virtio_scsi.ko*"
