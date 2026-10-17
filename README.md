@@ -20,9 +20,10 @@ guest-side bootstrap is the SSH **public key**, delivered via host→guest KVP
 first-NUL reader (see `lib/functions.sh` — stale heap bytes behind the
 terminator are a documented hv_kvp_daemon behavior).
 
-Kernel: `linux-virtual` (virtio + Hyper-V + VMware drivers — boots on
-Hyper-V Gen 1/2 today, QEMU/KVM untested). Secure Boot: Microsoft-signed
-shim/grub chain, UEFI-only.
+Kernel: `linux-virtual` (virtio + Hyper-V + VMware drivers — boots on Hyper-V
+Gen 2; QEMU/KVM untested). UEFI + Secure Boot (Microsoft-signed shim/grub
+chain); no BIOS boot. SSH user: `vmcreate` (key-only, passwordless sudo),
+matching VMCreate's default.
 
 ## Build
 
@@ -43,7 +44,10 @@ sha256 to the GitHub release. VMCreate downloads whatever release is
 ```
 build.sh          debootstrap → chroot → squashfs → ISO
 chroot_setup.sh   runs inside the chroot: kernel, sshd, vsock socket units
+guest/            systemd units + tmpfiles, first-class so CI verifies them
 autorun/          inject_ssh_key.sh — the only boot-time logic
 lib/functions.sh  log + read_kvp_field (first-NUL KVP reader)
-test/             bats tests; fixtures include a dirty (garbage-after-NUL) pool
+test/             bats: reader tests, inject_ssh_key tests (real script,
+                  test hooks), guest unit assertions; CI also runs
+                  systemd-analyze verify on guest/
 ```

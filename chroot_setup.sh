@@ -34,14 +34,15 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     linux-image-${KVER} linux-modules-${KVER} linux-cloud-tools-${KVER} \
     casper coreutils systemd-sysv iproute2 zstd
 
-# ── Strip kernel modules not needed for Hyper-V ──────────────────────
-# linux-azure ships hundreds of modules for bare-metal Azure hosts.
-# The live ISO only needs Hyper-V synthetic drivers, storage, filesystems,
-# and basic networking. Removing the rest saves 30-50 MB in the squashfs.
+# ── Strip kernel modules not needed in VMs ───────────────────────────
+# Generic distro kernels ship hundreds of modules for physical hosts.
+# The live ISO only needs the virtual drivers (Hyper-V, virtio), storage,
+# filesystems, and basic networking. Removing the rest saves 30-50 MB in
+# the squashfs. The driver whitelist assert below runs after this pass.
 KMOD_DIR=$(find /lib/modules -maxdepth 1 -mindepth 1 -type d | head -n1)
 if [ -d "$KMOD_DIR/kernel" ]; then
     echo "Stripping unnecessary kernel modules from $KMOD_DIR ..."
-    # Remove large driver subtrees that are irrelevant inside Hyper-V
+    # Remove large driver subtrees that are irrelevant in VMs
     rm -rf "$KMOD_DIR/kernel/drivers/gpu"
     rm -rf "$KMOD_DIR/kernel/drivers/net/wireless"
     rm -rf "$KMOD_DIR/kernel/drivers/bluetooth"
@@ -102,7 +103,9 @@ echo "Multi-hypervisor driver whitelist OK."
 # Purge linux-firmware — Hyper-V uses synthetic drivers, no firmware blobs needed
 apt-get purge -y linux-firmware 2>/dev/null || true
 
-# Configure systemd-networkd for DHCP on Ethernet
+# Configure systemd-networkd for DHCP on Ethernet — the target system's
+# package installs run inside this VM, so internet access is still needed.
+# (The VMCreate control channel does NOT use this network: it rides vsock.)
 mkdir -p /etc/systemd/network
 cat << EON > /etc/systemd/network/10-ethernet.network
 [Match]
@@ -112,104 +115,68 @@ Name=eth*
 DHCP=ipv4
 EON
 
-# Enable systemd-networkd
+# Enable systemd-networkd only — nothing here should ever wait for the
+# network to be "online".
 systemctl enable systemd-networkd 2>/dev/null || true
-systemctl enable systemd-networkd-wait-online 2>/dev/null || true
 
 # Bootloaders for UEFI/Secure Boot (Gen 2 only — no BIOS support)
 apt-get install -y --no-install-recommends grub-efi-amd64-signed shim-signed
 
-# Packages for autorun script (disk tools)
+# Disk tools VMCreate drives remotely
 apt-get install -y --no-install-recommends partclone gdisk e2fsprogs dosfstools rsync lvm2 efibootmgr grub2-common util-linux parted psmisc
 
 # Install btrfs-progs for btrfs root filesystem support (e.g. Parrot OS)
 apt-get install -y --no-install-recommends btrfs-progs
 
 # Install Tor daemon for distros that route APT through Tor (e.g. Whonix).
-# NOT enabled at boot — started on-demand by autorun when tor+ APT sources
+# NOT enabled at boot — VMCreate starts it over SSH when tor+ APT sources
 # are detected in the target VM's chroot.
 apt-get install -y --no-install-recommends tor
 
-# ── SSH: TCP (debug/fallback) + vsock (VMCreate control channel) ────
+# ── SSH over vsock: the VMCreate control channel ─────────────────────
 # VMCreate connects without any NIC or IP discovery:
 #   host:    ssh -o ProxyCommand="hvc.exe nc -t vsock <vm-guid> 22"
 #   guest:   systemd listens on AF_VSOCK and socket-activates sshd -i
 # OpenSSH itself has no vsock listener support — systemd provides it.
 # hv_sock (the AF_VSOCK transport on Hyper-V) is loaded explicitly via
 # modules-load.d; never rely on autoload ordering at early boot.
-# Auth bootstrap: the host writes the SSH public key via KVP right after
-# VM start; inject_ssh_key.sh (autorun/) installs it before we accept
-# connections. Password auth is disabled.
+# There is deliberately NO TCP sshd: the only way in is the host-private
+# vsock channel. Auth bootstrap: the host writes the SSH public key via
+# KVP right after VM start; inject_ssh_key.sh (autorun/) installs it
+# before sessions are accepted. Password auth is disabled.
 apt-get install -y --no-install-recommends openssh-server
 # Disable password auth — key-only access via KVP-injected pubkey
 sed -i 's/^#\?PasswordAuthentication .*/PasswordAuthentication no/' /etc/ssh/sshd_config
 sed -i 's/^#\?PubkeyAuthentication .*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
 sed -i 's/^#\?PermitRootLogin .*/PermitRootLogin no/' /etc/ssh/sshd_config
-# TCP sshd stays enabled as a debug/fallback path on any NIC the VM has
-systemctl enable ssh 2>/dev/null || true
 
 # Explicitly load the Hyper-V vsock transport at boot (the AF_VSOCK socket
 # unit below depends on it; autoload may fire too late or not at all).
 echo "hv_sock" > /etc/modules-load.d/hv_sock.conf
 
-# vsock listener: systemd accepts on AF_VSOCK port 22, spawns sshd -i per
-# connection (inetd style). ListenStream=vsock syntax verified for systemd
-# 255 (noble); see Phase 0 V4 in the vsock plan before changing it.
-cat << 'VSOCKSOCKET' > /etc/systemd/system/sshd-vsock.socket
-[Unit]
-Description=VMCreate sshd over Hyper-V vsock
-ConditionPathExists=/dev/vmbus/hv_socket
-
-[Socket]
-ListenStream=vsock::22
-Accept=yes
-
-[Install]
-WantedBy=multi-user.target
-VSOCKSOCKET
-
-cat << 'VSOCKSERVICE' > /etc/systemd/system/sshd-vsock@.service
-[Unit]
-Description=sshd session over vsock (%i)
-
-[Service]
-ExecStart=-/usr/sbin/sshd -i
-StandardInput=socket
-StandardOutput=socket
-StandardError=socket
-VSOCKSERVICE
-
+# Install the systemd units from guest/ (first-class files so CI can
+# verify them: systemd-analyze verify + bats assertions in test/).
+install -m 644 /tmp/guest/sshd-vsock.socket        /etc/systemd/system/
+install -m 644 /tmp/guest/sshd-vsock@.service      /etc/systemd/system/
+install -m 644 /tmp/guest/inject-ssh-key.service   /etc/systemd/system/
+install -m 644 /tmp/guest/vmcreate-sshd.conf       /usr/lib/tmpfiles.d/
 systemctl enable sshd-vsock.socket 2>/dev/null || true
+systemctl enable inject-ssh-key.service 2>/dev/null || true
 
-# User setup — ubuntu user for SSH (key-only auth, no password)
-adduser --disabled-password --gecos "" ubuntu
-usermod -aG sudo ubuntu
-echo "ubuntu ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/ubuntu
-chmod 0440 /etc/sudoers.d/ubuntu
+# User setup — vmcreate user (matches SshGuestShell's default
+# AutomationUser, so VMCreate needs no explicit username). Key-only auth,
+# no password; the key is injected at runtime via KVP.
+adduser --disabled-password --gecos "" vmcreate
+usermod -aG sudo vmcreate
+echo "vmcreate ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/vmcreate
+chmod 0440 /etc/sudoers.d/vmcreate
 
 # Prepare SSH authorized_keys directory (key injected at runtime via KVP)
-mkdir -p /home/ubuntu/.ssh
-touch /home/ubuntu/.ssh/authorized_keys
-chown -R ubuntu:ubuntu /home/ubuntu/.ssh
-chmod 700 /home/ubuntu/.ssh
-
-# Systemd service to run key injection early in boot
-cat << 'KVPUNIT' > /etc/systemd/system/inject-ssh-key.service
-[Unit]
-Description=Inject SSH public key from Hyper-V KVP
-After=hv-kvp-daemon.service
-Before=ssh.service sshd-vsock.socket
-Wants=hv-kvp-daemon.service
-
-[Service]
-Type=oneshot
-ExecStart=/bin/bash /opt/autorun/inject_ssh_key.sh
-RemainAfterExit=yes
-
-[Install]
-WantedBy=multi-user.target
-KVPUNIT
-systemctl enable inject-ssh-key.service 2>/dev/null || true
+mkdir -p /home/vmcreate/.ssh
+touch /home/vmcreate/.ssh/authorized_keys
+chown -R vmcreate:vmcreate /home/vmcreate/.ssh
+chmod 700 /home/vmcreate/.ssh
+chmod 600 /home/vmcreate/.ssh/authorized_keys
 
 # Create /var/crash to avoid boot error on missing directory
 mkdir -p /var/crash

@@ -1,0 +1,11 @@
+[Unit]
+Description=VMCreate sshd over vsock
+ConditionPathExists=/dev/vsock
+After=systemd-modules-load.service
+
+[Socket]
+ListenStream=vsock::22
+Accept=yes
+
+[Install]
+WantedBy=sockets.target

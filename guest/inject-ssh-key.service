@@ -1,0 +1,12 @@
+[Unit]
+Description=Inject SSH public key from Hyper-V KVP
+After=hv-kvp-daemon.service
+Wants=hv-kvp-daemon.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /opt/autorun/inject_ssh_key.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

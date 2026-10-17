@@ -1,9 +1,9 @@
 #!/bin/bash
 set -e
 
-# Script to build a custom ISO that runs the autorun script automatically on boot.
-# Supports UEFI and Secure Boot (Select Microsoft UEFI CA) — Hyper-V Gen 2 only.
-# Assumes 'autorun.sh' script is in the current directory.
+# Build the VMCreate deployment ISO: a logic-free live Ubuntu that boots
+# to a vsock-activated sshd and waits for VMCreate to drive it.
+# UEFI + Secure Boot (Microsoft UEFI CA) — Hyper-V Gen 2.
 
 WORK_DIR=$(pwd)
 UBUNTU_VERSION="noble"  # Ubuntu 24.04 LTS
@@ -126,13 +126,13 @@ if [ "$DEBOOTSTRAP_OK" != true ]; then
 fi
 echo "debootstrap succeeded with mirror: $DEBOOTSTRAP_MIRROR"
 
-# Copy autorun script and lib to chroot
+# Copy boot scripts and lib to chroot
 source_dir="./autorun"
 dest_dir="chroot/opt/autorun"
 lib_dir="chroot/opt/lib"
 sudo mkdir -p $dest_dir $lib_dir
 
-# Copy shared library functions (autorun.sh sources ../lib/functions.sh)
+# Shared library (inject_ssh_key.sh sources /opt/lib/functions.sh)
 sudo cp ./lib/functions.sh "$lib_dir/functions.sh"
 sudo chmod +x "$lib_dir/functions.sh"
 
@@ -161,9 +161,11 @@ sudo chroot chroot mount -t devpts none /dev/pts
 sudo rm -f chroot/etc/resolv.conf
 printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' | sudo tee chroot/etc/resolv.conf > /dev/null
 
-# Setup autorun script
-sudo cp ./chroot_setup.sh chroot/tmp/chroot_setup.sh 
-sudo cp ./autorun/* chroot/opt/autorun
+# Setup chroot: copy the chroot script, guest systemd units (installed by
+# chroot_setup.sh from /tmp/guest/), then run the setup inside the chroot.
+sudo cp ./chroot_setup.sh chroot/tmp/chroot_setup.sh
+sudo mkdir -p chroot/tmp/guest
+sudo cp ./guest/* chroot/tmp/guest/
 sudo chroot chroot /bin/bash /tmp/chroot_setup.sh
 
 # Unmount

@@ -1,0 +1,13 @@
+[Unit]
+Description=sshd session over vsock (%i)
+# Wait for the KVP-injected key so an early connection isn't rejected.
+# (Ordering here is safe: the socket itself has no dependency on the
+# injection service — ordering a plain service *before* a socket would
+# cycle through basic.target <- sockets.target.)
+After=inject-ssh-key.service
+
+[Service]
+ExecStart=-/usr/sbin/sshd -i
+StandardInput=socket
+StandardOutput=socket
+StandardError=socket

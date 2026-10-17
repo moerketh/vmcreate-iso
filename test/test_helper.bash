@@ -19,16 +19,9 @@ teardown() {
     if [[ -n "$TEST_TEMP_DIR" && -d "$TEST_TEMP_DIR" ]]; then
         rm -rf "$TEST_TEMP_DIR"
     fi
-}
+    }
 
-# Helper function to skip tests if SKIP_KVP_TESTS is set
-skip_if_no_kvp() {
-    if [[ -n "$SKIP_KVP_TESTS" ]]; then
-        skip "Skipping KVP tests - SKIP_KVP_TESTS is set"
-    fi
-}
-
-# Don't auto-load functions.sh in test helper to avoid sourcing conflicts
+    # Don't auto-load functions.sh in test helper to avoid sourcing conflicts
 # Individual test files can source functions.sh if needed
 
 # Common utility functions for testing
