@@ -1,8 +1,6 @@
 # vmcreate-iso
 
 Boot medium for [VMCreate](https://github.com/moerketh/VMCreate) deployments.
-Replaces [hyperv-convert-iso](https://github.com/moerketh/hyperv-convert-iso)
-(the 1.x line stays untouched there as reference).
 
 ## What it is
 
