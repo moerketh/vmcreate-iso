@@ -1,0 +1,7 @@
+[Unit]
+Description=Generate SSH host keys for vsock sshd (per boot)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/ssh-keygen -A
+RemainAfterExit=yes

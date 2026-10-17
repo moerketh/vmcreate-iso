@@ -47,6 +47,7 @@ jobs:
           systemd-analyze verify \
             sshd-vsock.socket \
             sshd-vsock@.service \
+            sshd-vsock-keygen.service \
             inject-ssh-key.service || {
               echo "systemd-analyze verify reported errors" >&2
               exit 1

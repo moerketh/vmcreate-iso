@@ -152,8 +152,9 @@ sed -i 's/^#\?PubkeyAuthentication .*/PubkeyAuthentication yes/' /etc/ssh/sshd_c
 sed -i 's/^#\?PermitRootLogin .*/PermitRootLogin no/' /etc/ssh/sshd_config
 systemctl mask ssh.socket ssh.service
 
-# Host keys are generated per boot, not baked into the ISO — otherwise
-# every published ISO would carry the same private keys.
+# Host keys are generated per boot by the sshd-vsock-keygen oneshot
+# (sessions order after it), never baked into the ISO — otherwise every
+# published ISO would carry the same private keys.
 rm -f /etc/ssh/ssh_host_*
 
 # Load the Hyper-V vsock transport explicitly (the AF_VSOCK socket unit
@@ -164,6 +165,7 @@ echo "hv_sock" > /etc/modules-load.d/hv_sock.conf
 # verify them: systemd-analyze verify + bats assertions in test/).
 install -m 644 /tmp/guest/sshd-vsock.socket        /etc/systemd/system/
 install -m 644 /tmp/guest/sshd-vsock@.service      /etc/systemd/system/
+install -m 644 /tmp/guest/sshd-vsock-keygen.service /etc/systemd/system/
 install -m 644 /tmp/guest/inject-ssh-key.service   /etc/systemd/system/
 install -m 644 /tmp/guest/vmcreate-sshd.conf       /usr/lib/tmpfiles.d/
 systemctl enable sshd-vsock.socket 2>/dev/null || true

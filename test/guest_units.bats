@@ -28,7 +28,7 @@ load 'test_helper'
 }
 
 @test "session service waits for key injection (After=, the safe direction)" {
-    grep -q '^After=inject-ssh-key.service$' "$PROJECT_ROOT/guest/sshd-vsock@.service"
+    grep -qE '^After=.*inject-ssh-key\.service' "$PROJECT_ROOT/guest/sshd-vsock@.service"
 }
 
 @test "session service runs sshd -i on the socket" {
@@ -36,8 +36,18 @@ load 'test_helper'
     grep -q '^StandardInput=socket$' "$PROJECT_ROOT/guest/sshd-vsock@.service"
 }
 
-@test "session service generates missing host keys before sshd starts" {
-    grep -q '^ExecStartPre=/usr/bin/ssh-keygen -A$' "$PROJECT_ROOT/guest/sshd-vsock@.service"
+@test "host keys are generated once per boot by a oneshot, not per session" {
+    # The keygen oneshot exists and is not enabled into the boot graph
+    # directly — sessions pull it in via Wants=.
+    grep -q '^Type=oneshot$' "$PROJECT_ROOT/guest/sshd-vsock-keygen.service"
+    grep -q '^ExecStart=/usr/bin/ssh-keygen -A$' "$PROJECT_ROOT/guest/sshd-vsock-keygen.service"
+    grep -q '^RemainAfterExit=yes$' "$PROJECT_ROOT/guest/sshd-vsock-keygen.service"
+    # The session template waits for it and does NOT run keygen itself
+    # (Accept=yes means one instance per connection — a per-session keygen
+    # would race concurrent queued sessions against each other).
+    grep -q '^Wants=sshd-vsock-keygen.service$' "$PROJECT_ROOT/guest/sshd-vsock@.service"
+    grep -q '^After=inject-ssh-key.service sshd-vsock-keygen.service$' "$PROJECT_ROOT/guest/sshd-vsock@.service"
+    ! grep -q 'ExecStartPre=.*ssh-keygen' "$PROJECT_ROOT/guest/sshd-vsock@.service"
 }
 
 @test "build masks TCP sshd and asserts it stays masked" {
@@ -49,6 +59,7 @@ load 'test_helper'
 @test "build deletes host keys and asserts none leak into the image" {
     grep -q '^rm -f /etc/ssh/ssh_host_\*$' "$PROJECT_ROOT/chroot_setup.sh"
     grep -q 'ERROR: SSH host keys leaked' "$PROJECT_ROOT/chroot_setup.sh"
+    grep -q 'sshd-vsock-keygen.service /etc/systemd/system/' "$PROJECT_ROOT/chroot_setup.sh"
 }
 
 @test "tmpfiles entry creates /run/sshd for sshd -i" {

@@ -1,16 +1,15 @@
 [Unit]
 Description=sshd session over vsock (%i)
-# Wait for the KVP-injected key so an early connection isn't rejected.
-# (Ordering here is safe: the socket itself has no dependency on the
-# injection service — ordering a plain service *before* a socket would
-# cycle through basic.target <- sockets.target.)
-After=inject-ssh-key.service
+# Wait for the KVP-injected key so an early connection isn't rejected, and
+# for host-key generation (oneshot, once per boot — NOT an ExecStartPre
+# here: Accept=yes makes this unit start per connection, and concurrent
+# queued sessions would race ssh-keygen -A against each other, handing the
+# live session one key generation and the next connection another).
+# Ordering a session (not the socket) after these services can't cycle.
+Wants=sshd-vsock-keygen.service
+After=inject-ssh-key.service sshd-vsock-keygen.service
 
 [Service]
-# Generate host keys on first session of this boot (only creates missing
-# ones — the ISO deliberately ships none, so every boot gets fresh keys
-# instead of sharing one private key across all published ISOs).
-ExecStartPre=/usr/bin/ssh-keygen -A
 ExecStart=-/usr/sbin/sshd -i
 StandardInput=socket
 StandardOutput=socket
