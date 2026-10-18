@@ -25,6 +25,26 @@ Gen 2; QEMU/KVM untested). UEFI + Secure Boot (Microsoft-signed shim/grub
 chain); no BIOS boot. SSH user: `vmcreate` (key-only, passwordless sudo),
 matching VMCreate's default.
 
+## Splash screen
+
+![splash](splash/preview.png)
+
+A Plymouth theme shows from the initramfs until power-off (the GRUB menu is
+hidden; hold Esc/Shift for it, including a verbose no-splash entry; Esc on
+the splash shows the console log). The ISO only ships the theme — VMCreate
+drives the text over SSH with stock plymouth commands:
+
+```bash
+sudo plymouth display-message --text="Cloning disk 1 of 2"
+sudo plymouth system-update --progress=42   # 1..100: determinate bar
+sudo plymouth system-update --progress=0    # back to the indeterminate sweep
+```
+
+The graphics are generated, not drawn: `python3 splash/render.py --preview`
+(Pillow) rewrites `splash/vmcreate/*.png` and the preview above. Plymouth
+renders on the built-in simpledrm (`drivers/gpu` is stripped), hence
+`plymouth.use-simpledrm` on the kernel command line.
+
 ## Build
 
 From a native Linux filesystem (WSL: copy out of /mnt/c first):
@@ -45,9 +65,10 @@ sha256 to the GitHub release. VMCreate downloads whatever release is
 build.sh          debootstrap → chroot → squashfs → ISO
 chroot_setup.sh   runs inside the chroot: kernel, sshd, vsock socket units
 guest/            systemd units + tmpfiles, first-class so CI verifies them
+splash/           Plymouth theme (vmcreate/) + render.py that generates it
 autorun/          inject_ssh_key.sh — the only boot-time logic
 lib/functions.sh  log + read_kvp_field (first-NUL KVP reader)
 test/             bats: reader tests, inject_ssh_key tests (real script,
-                  test hooks), guest unit assertions; CI also runs
+                  test hooks), guest unit and splash assertions; CI also runs
                   systemd-analyze verify on guest/
 ```

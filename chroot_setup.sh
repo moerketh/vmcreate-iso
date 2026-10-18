@@ -98,6 +98,7 @@ assert_driver "virtio_blk.ko"                   # KVM disks (built-in on noble)
 assert_driver "virtio_scsi.ko"
 assert_driver "virtio_net.ko"
 assert_driver "vmw_vsock_virtio_transport.ko"   # AF_VSOCK transport on KVM
+assert_driver "simpledrm.ko"                    # splash display on the UEFI GOP (drivers/gpu is stripped)
 echo "Multi-hypervisor driver whitelist OK."
 
 # Purge linux-firmware — Hyper-V uses synthetic drivers, no firmware blobs needed
@@ -188,6 +189,52 @@ done
     exit 1
 }
 
+# ── Boot splash (Plymouth) ───────────────────────────────────────────
+# The VMCreate theme (splash/, graphics by splash/render.py) shows from
+# the initramfs until power-off; VMCreate pushes status text over SSH with
+# `plymouth display-message` / `plymouth system-update --progress=N`.
+# Display: drivers/gpu is stripped, so plymouth renders on the built-in
+# simpledrm (UEFI GOP); grub.cfg passes plymouth.use-simpledrm, otherwise
+# plymouthd ignores simpledrm until its device timeout. plymouth-label
+# provides Image.Text (pango) and pulls in the Ubuntu font.
+apt-get install -y --no-install-recommends plymouth plymouth-label
+THEME_DIR=/usr/share/plymouth/themes/vmcreate
+mkdir -p "$THEME_DIR"
+install -m 644 /tmp/splash/vmcreate/* "$THEME_DIR/"
+# Debian/Ubuntu select the theme via the default.plymouth alternative (the
+# initramfs hook reads it); plymouthd.conf covers the daemon in the rootfs.
+update-alternatives --install /usr/share/plymouth/themes/default.plymouth default.plymouth \
+    "$THEME_DIR/vmcreate.plymouth" 200
+update-alternatives --set default.plymouth "$THEME_DIR/vmcreate.plymouth"
+mkdir -p /etc/plymouth
+printf '[Daemon]\nTheme=vmcreate\nShowDelay=0\n' > /etc/plymouth/plymouthd.conf
+# Keep the splash up after boot: nothing may quit plymouth before power-off.
+# getty@tty1 would compete with it for the console (and there is no
+# password login on this ISO anyway).
+systemctl mask plymouth-quit.service plymouth-quit-wait.service getty@tty1.service
+update-initramfs -u -k all
+
+# Fail the build unless the splash actually made it into the initrd.
+lsinitramfs "/boot/initrd.img-$KVER_SHORT" > /tmp/initrd.list
+for f in usr/share/plymouth/themes/vmcreate/vmcreate.plymouth \
+         usr/share/plymouth/themes/vmcreate/vmcreate.script \
+         usr/share/plymouth/themes/vmcreate/wordmark.png \
+         plymouth/script.so \
+         plymouth/label-pango.so \
+         usr/share/fonts/truetype/ubuntu/Ubuntu; do
+    grep -q "$f" /tmp/initrd.list || {
+        echo "ERROR: splash: $f missing from initrd" >&2
+        exit 1
+    }
+done
+for unit in plymouth-quit.service plymouth-quit-wait.service; do
+    state=$(systemctl is-enabled "$unit" 2>/dev/null || true)
+    [ "$state" = "masked" ] || {
+        echo "ERROR: splash: $unit is '$state' (want masked)" >&2
+        exit 1
+    }
+done
+
 # User setup — vmcreate user (matches SshGuestShell's default
 # AutomationUser, so VMCreate needs no explicit username). Key-only auth,
 # no password; the key is injected at runtime via KVP.
@@ -227,6 +274,15 @@ update-locale LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8
 # Clean up documentation, manpages, extra locales, and python remnants
 rm -rf /usr/share/doc/* /usr/share/man/* /usr/share/info/* /usr/lib/python* /usr/bin/python*
 #rm -rf /usr/share/locale/!(en|en_US|en_US.UTF-8)
+
+# The purges above remove reverse dependencies silently; make sure the
+# splash stack survived them.
+for pkg in plymouth plymouth-label; do
+    dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q "install ok installed" || {
+        echo "ERROR: splash: $pkg was removed by a later purge" >&2
+        exit 1
+    }
+done
 
 # More cleanup
 apt-get autoremove -y

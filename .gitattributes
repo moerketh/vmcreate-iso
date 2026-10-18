@@ -5,3 +5,7 @@
 *.conf text eol=lf
 grub.cfg text eol=lf
 *.bats text eol=lf
+*.script text eol=lf
+*.plymouth text eol=lf
+*.py text eol=lf
+*.png binary

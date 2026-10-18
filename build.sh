@@ -166,6 +166,11 @@ printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' | sudo tee chroot/etc/resolv.c
 sudo cp ./chroot_setup.sh chroot/tmp/chroot_setup.sh
 sudo mkdir -p chroot/tmp/guest
 sudo cp ./guest/* chroot/tmp/guest/
+# Plymouth theme (installed by chroot_setup.sh from /tmp/splash/); the
+# script gets the build version stamped into its footer.
+sudo mkdir -p chroot/tmp/splash/vmcreate
+sudo cp ./splash/vmcreate/* chroot/tmp/splash/vmcreate/
+sudo sed -i "s|@VMCREATE_ISO_VERSION@|${BUILD_VERSION}|" chroot/tmp/splash/vmcreate/vmcreate.script
 sudo chroot chroot /bin/bash /tmp/chroot_setup.sh
 
 # Unmount
