@@ -63,13 +63,22 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
 
 # ── Strip kernel modules not needed in VMs ───────────────────────────
 # Generic distro kernels ship hundreds of modules for physical hosts.
-# The live ISO only needs the virtual drivers (Hyper-V, virtio), storage,
-# filesystems, and basic networking. Removing the rest saves 30-50 MB in
-# the squashfs. The driver whitelist assert below runs after this pass.
+# The live ISO only needs the virtual drivers (Hyper-V, virtio, VMware),
+# storage, local filesystems and basic networking. VMCreate never touches
+# zfs or network filesystems on the target (its scripts install the
+# target's own kernel userspace from inside the target chroot), and the
+# target's GRUB is likewise the target's own — the physical-controller
+# and NIC trees below are pure dead weight. The driver whitelist assert
+# below runs after this pass.
 KMOD_DIR=$(find /lib/modules -maxdepth 1 -mindepth 1 -type d | head -n1)
 if [ -d "$KMOD_DIR/kernel" ]; then
     echo "Stripping unnecessary kernel modules from $KMOD_DIR ..."
-    # Remove large driver subtrees that are irrelevant in VMs
+    # Decompress .ko.zst first: noble ships modules zstd-compressed, and xz
+    # (squashfs) / zstd-19 (initrd, see the COMPRESS drop-in above) cannot
+    # shrink data that is already compressed. Decompressing also makes the
+    # name-based cleanups below see plain .ko files.
+    find "$KMOD_DIR" -name '*.ko.zst' -exec unzstd --rm -q {} +
+    # Physical GPUs, wireless, media, USB, sound, sensors, staging, ...
     rm -rf "$KMOD_DIR/kernel/drivers/gpu"
     rm -rf "$KMOD_DIR/kernel/drivers/net/wireless"
     rm -rf "$KMOD_DIR/kernel/drivers/bluetooth"
@@ -94,11 +103,28 @@ if [ -d "$KMOD_DIR/kernel" ]; then
     rm -rf "$KMOD_DIR/kernel/net/bluetooth"
     rm -rf "$KMOD_DIR/kernel/net/mac80211"
     rm -rf "$KMOD_DIR/kernel/net/nfc"
-    # Decompress .ko.zst modules: noble ships them zstd-compressed, and xz
-    # (squashfs and the initrd, see the COMPRESS drop-in above) cannot shrink
-    # data that is already compressed, so they were riding along ~as-is.
-    # Plain .ko files let xz do its job in both the squashfs and the initrd.
-    find "$KMOD_DIR" -name '*.ko.zst' -exec unzstd --rm -q {} +
+    # Physical NICs (mlx5, bnx2x, i40e, ixgbe, ...): the virtual NICs a VM
+    # boots on — hv_netvsc, virtio_net, vmxnet3 — live outside this tree.
+    rm -rf "$KMOD_DIR/kernel/drivers/net/ethernet"
+    # Physical FC/SAS raid controllers: keep the top-level .ko files a VM
+    # needs (sd_mod, sr_mod, virtio_scsi, hv_storvsc, vmw_pvscsi) and the
+    # SCSI transport modules; the subdirs are all physical hardware.
+    find "$KMOD_DIR/kernel/drivers/scsi" -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} +
+    rm -rf "$KMOD_DIR/kernel/drivers/target"
+    # zfs and network filesystems (targets needing them load their own)
+    rm -rf "$KMOD_DIR/kernel/fs/zfs" "$KMOD_DIR/kernel/fs/nfs" "$KMOD_DIR/kernel/fs/nfsd" \
+           "$KMOD_DIR/kernel/fs/smb" "$KMOD_DIR/kernel/fs/ceph" "$KMOD_DIR/kernel/fs/dlm" \
+           "$KMOD_DIR/kernel/fs/gfs2" "$KMOD_DIR/kernel/fs/ocfs2" \
+           "$KMOD_DIR/kernel/net/sunrpc"
+    # Protocol stacks and net filtering a deployment VM never uses
+    rm -rf "$KMOD_DIR/kernel/net/sched" "$KMOD_DIR/kernel/net/sctp" "$KMOD_DIR/kernel/net/tipc" \
+           "$KMOD_DIR/kernel/net/rxrpc" "$KMOD_DIR/kernel/net/can" \
+           "$KMOD_DIR/kernel/net/openvswitch" "$KMOD_DIR/kernel/net/mpls" \
+           "$KMOD_DIR/kernel/net/6lowpan" "$KMOD_DIR/kernel/net/rds"
+    # KVM host-side virtualization and kernel self-tests. arch/x86/crypto
+    # (aesni etc.) stays: dm-crypt on targets uses it for real speedup.
+    rm -rf "$KMOD_DIR/kernel/arch/x86/kvm"
+    find "$KMOD_DIR" -name 'test_*.ko' -delete
     # Rebuild module dependency map
     depmod -a "$(basename "$KMOD_DIR")"
     echo "Kernel module stripping complete."
@@ -131,6 +157,19 @@ assert_driver "virtio_scsi.ko"
 assert_driver "virtio_net.ko"
 assert_driver "vmw_vsock_virtio_transport.ko"   # AF_VSOCK transport on KVM
 assert_driver "simpledrm.ko"                    # splash display on the UEFI GOP (drivers/gpu is stripped)
+assert_driver "loop.ko"                         # casper mounts the squashfs via loop
+assert_driver "overlay.ko"                      # casper rootfs overlay
+# Local filesystems the workflows mount (clone/customize) or resize
+assert_driver "ext4.ko"                         # most targets' root
+assert_driver "xfs.ko"                          # RHEL-style targets
+assert_driver "btrfs.ko"                        # e.g. Parrot OS targets (btrfs-progs installed for it)
+assert_driver "vfat.ko"                         # ESP (FAT16/32) + the EFI boot image
+assert_driver "isofs.ko"                        # the ISO itself (casper)
+assert_driver "nls_cp437.ko"                    # vfat short-name codepage
+assert_driver "nls_iso8859-1.ko"                # vfat iocharset default (hyphenated on noble)
+assert_driver "dm-mod.ko"                       # device-mapper base (built-in on noble)
+assert_driver "dm-crypt.ko"                     # LUKS targets (partclone + cryptsetup flows)
+assert_driver "md-mod.ko"                       # mdraid base (built-in on noble)
 echo "Multi-hypervisor driver whitelist OK."
 
 # Purge linux-firmware — Hyper-V uses synthetic drivers, no firmware blobs needed
@@ -244,6 +283,14 @@ printf '[Daemon]\nTheme=vmcreate\nShowDelay=0\n' > /etc/plymouth/plymouthd.conf
 # getty@tty1 would compete with it for the console (and there is no
 # password login on this ISO anyway).
 systemctl mask plymouth-quit.service plymouth-quit-wait.service getty@tty1.service
+
+# ── Trim before the final initrd build ──────────────────────────────
+# udev hardware DB: vendor/model strings and keymaps for physical input
+# devices — worthless in a VM (a keyboard works without it), but hwdb.bin
+# alone is 11.7 MB and mkinitramfs copies it into the initrd as well, so
+# it ships in BOTH images when left here.
+rm -rf /usr/lib/udev/hwdb.d /usr/lib/udev/hwdb.bin
+
 # Final initrd: the only generation that actually ships. Restore the trigger
 # first — update-initramfs -u honors update_initramfs=no. (-c from the kernel
 # postinst ignores it, which is why that first generation is unavoidable.)
@@ -309,7 +356,19 @@ update-locale LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8
 
 # Clean up documentation, manpages, extra locales, and python remnants
 rm -rf /usr/share/doc/* /usr/share/man/* /usr/share/info/* /usr/lib/python* /usr/bin/python*
-#rm -rf /usr/share/locale/!(en|en_US|en_US.UTF-8)
+# Translations and locale machinery (after locale-gen above has run):
+# keep only en* message catalogs; /usr/share/i18n is only needed to RUN
+# locale-gen; gconv tables serve iconv, which nothing on the image uses.
+find /usr/share/locale -mindepth 1 -maxdepth 1 -type d ! -name 'en*' -exec rm -rf {} +
+rm -f /usr/share/locale/locale_alias
+rm -rf /usr/share/i18n /usr/lib/x86_64-linux-gnu/gconv
+# GRUB module trees (~16 MB uncompressed): targets install their OWN GRUB
+# from inside the target chroot (VMCreate's install_grub.sh apt/pacman/dnf
+# installs there); the live ISO boots via the signed loaders in
+# /usr/lib/grub/x86_64-efi-signed — a different package, kept.
+rm -rf /usr/lib/grub/x86_64-efi /usr/lib/grub/i386-pc /usr/share/grub
+# file(1) magic DB — file(1) itself is not installed on this image
+rm -f /usr/lib/*/file/magic.mgc /usr/share/misc/magic.mgc
 
 # The purges above remove reverse dependencies silently; make sure the
 # splash stack survived them.
