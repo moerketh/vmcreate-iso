@@ -193,6 +193,12 @@ KERNEL_VERSION=$(ls chroot/boot/vmlinuz-* | head -n1 | cut -d- -f2-)
 sudo cp "chroot/boot/vmlinuz-${KERNEL_VERSION}" image/casper/vmlinuz
 sudo cp "chroot/boot/initrd.img-${KERNEL_VERSION}" image/casper/initrd
 
+# Measure as we build: sizes here are what the ISO download actually pays,
+# and toram pays the squashfs+initrd again at every boot.
+measure() { sudo du -h "$1" | cut -f1; }
+printf 'SIZE kernel  %8s  image/casper/vmlinuz\n' "$(measure image/casper/vmlinuz)"
+printf 'SIZE initrd  %8s  image/casper/initrd\n' "$(measure image/casper/initrd)"
+
 # Create manifest
 sudo chroot chroot dpkg-query -W --showformat='${Package} ${Version}\n' > image/casper/filesystem.manifest
 sudo cp image/casper/filesystem.manifest image/casper/filesystem.manifest-desktop
@@ -212,6 +218,7 @@ else
     echo "ERROR: Squashfs verification FAILED — the image is corrupt. Aborting." >&2
     exit 1
 fi
+printf 'SIZE squashfs %7s  image/casper/filesystem.squashfs\n' "$(measure image/casper/filesystem.squashfs)"
 
 # Print filesystem size
 printf $(sudo du -sx --block-size=1 chroot | cut -f1) > image/casper/filesystem.size
@@ -227,9 +234,24 @@ sudo cp /usr/lib/shim/shimx64.efi.signed isolinux/bootx64.efi
 sudo cp /usr/lib/shim/mmx64.efi isolinux/mmx64.efi
 sudo cp /usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed isolinux/grubx64.efi
 
-# Create EFI boot image
-dd if=/dev/zero of=${WORK_DIR}/image/isolinux/efiboot.img bs=1M count=10
-mkfs.vfat -F 16 -n "EFI Boot" ${WORK_DIR}/image/isolinux/efiboot.img
+# Create EFI boot image — sized to fit: the fixed 10 MB image held ~4.5 MB
+# of loaders. It lives only in the appended GPT partition (the /EFI grafts
+# below serve the ISO filesystem itself), so every MB here is a MB in the
+# ISO download. The 256 KiB headroom absorbs upstream loader size growth.
+EFI_SRC_FILES=(
+    ../chroot/usr/lib/shim/shimx64.efi.signed
+    ../chroot/usr/lib/shim/mmx64.efi
+    ../chroot/usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed
+    isolinux/grub.cfg
+)
+# FAT16 needs >=4085 clusters, so force 512-byte clusters (-s 1) and keep a
+# 3 MiB floor (6144 clusters) — that is why the old fixed image was 10 MB.
+EFI_IMG_BYTES=$(( $(du -bc "${EFI_SRC_FILES[@]}" | tail -1 | cut -f1) + 256*1024 ))
+if [ "$EFI_IMG_BYTES" -lt 3145728 ]; then EFI_IMG_BYTES=3145728; fi
+EFI_IMG_BYTES=$(( (EFI_IMG_BYTES + 511) / 512 * 512 ))
+truncate -s "$EFI_IMG_BYTES" ${WORK_DIR}/image/isolinux/efiboot.img
+mkfs.vfat -F 16 -s 1 -n "EFI Boot" ${WORK_DIR}/image/isolinux/efiboot.img >/dev/null
+printf 'SIZE efiboot %8s  isolinux/efiboot.img\n' "$(measure "${WORK_DIR}/image/isolinux/efiboot.img")"
 mloop=$(sudo losetup --show -f ${WORK_DIR}/image/isolinux/efiboot.img)
 sudo mkdir -p /mnt/efi
 sudo mount "${mloop}" /mnt/efi
@@ -270,10 +292,10 @@ sudo xorriso \
       "/EFI/boot/mmx64.efi=isolinux/mmx64.efi" \
       "/EFI/boot/grubx64.efi=isolinux/grubx64.efi" \
       "/EFI/ubuntu/grub.cfg=isolinux/grub.cfg" \
-      "/isolinux/efiboot.img=isolinux/efiboot.img" \
       "."
 
 cd ..
 echo "ISO created at ${WORK_DIR}/${ISO_NAME}"
+printf 'SIZE iso     %8s  %s\n' "$(du -h "${ISO_NAME}" | cut -f1)" "$ISO_NAME"
 
 # cleanup_build runs automatically via the EXIT trap

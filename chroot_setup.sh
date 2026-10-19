@@ -10,6 +10,15 @@ deb http://archive.ubuntu.com/ubuntu/ noble-updates main restricted universe mul
 deb http://security.ubuntu.com/ubuntu/ noble-security main restricted universe multiverse
 EOT
 
+# Initrd compression: the default (zstd level 1) optimizes for boot speed,
+# but toram copies the initrd once at boot and every MB ships in the ISO
+# download. xz roughly halves the initrd. A conf.d/ drop-in overrides
+# initramfs.conf and survives package upgrades; it is written before any
+# install so every update-initramfs run (kernel postinst, plymouth, the
+# explicit one below) uses it.
+mkdir -p /etc/initramfs-tools/conf.d
+echo "COMPRESS=xz" > /etc/initramfs-tools/conf.d/vmcreate-compress
+
 apt-get update -y
 apt-get upgrade -y
 apt-get install -y --no-install-recommends dbus
@@ -32,7 +41,7 @@ fi
 echo "Resolved kernel version: $KVER"
 DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     linux-image-${KVER} linux-modules-${KVER} linux-cloud-tools-${KVER} \
-    casper coreutils systemd-sysv iproute2 zstd
+    casper coreutils systemd-sysv iproute2 zstd xz-utils
 
 # ── Strip kernel modules not needed in VMs ───────────────────────────
 # Generic distro kernels ship hundreds of modules for physical hosts.
@@ -67,6 +76,11 @@ if [ -d "$KMOD_DIR/kernel" ]; then
     rm -rf "$KMOD_DIR/kernel/net/bluetooth"
     rm -rf "$KMOD_DIR/kernel/net/mac80211"
     rm -rf "$KMOD_DIR/kernel/net/nfc"
+    # Decompress .ko.zst modules: noble ships them zstd-compressed, and xz
+    # (squashfs and the initrd, see the COMPRESS drop-in above) cannot shrink
+    # data that is already compressed, so they were riding along ~as-is.
+    # Plain .ko files let xz do its job in both the squashfs and the initrd.
+    find "$KMOD_DIR" -name '*.ko.zst' -exec unzstd --rm -q {} +
     # Rebuild module dependency map
     depmod -a "$(basename "$KMOD_DIR")"
     echo "Kernel module stripping complete."
