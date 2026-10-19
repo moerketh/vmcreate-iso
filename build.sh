@@ -227,13 +227,22 @@ printf $(sudo du -sx --block-size=1 chroot | cut -f1) > image/casper/filesystem.
 # Access image directory
 cd image
 
-# Copy custom grub config (goes into the EFI boot image below)
+# Copy custom grub config (goes into the EFI boot image and the ISO
+# filesystem below)
 sudo cp ../grub.cfg isolinux/grub.cfg
 
+# Ubuntu's signed grubx64.efi has an embedded early config that runs
+# `search --file /EFI/ubuntu/grub.cfg` on its *boot device* — the El Torito
+# virtual CD, i.e. this ISO filesystem — and drops to the GRUB prompt if it
+# finds nothing. The copy inside the appended FAT partition is never read,
+# so this graft is load-bearing (verified: removing it lands on `grub>`).
+mkdir -p EFI/ubuntu
+sudo cp ../grub.cfg EFI/ubuntu/grub.cfg
+
 # Create EFI boot image — sized to fit: the fixed 10 MB image held ~4.5 MB
-# of loaders. It lives only in the appended GPT partition (the /EFI grafts
-# below serve the ISO filesystem itself), so every MB here is a MB in the
-# ISO download. The 256 KiB headroom absorbs upstream loader size growth.
+# of loaders. Only its El Torito boot entry matters (see the EFI/ubuntu
+# graft above), so every MB here is a MB in the ISO download. The 256 KiB
+# headroom absorbs upstream loader size growth.
 EFI_SRC_FILES=(
     /usr/lib/shim/shimx64.efi.signed
     /usr/lib/shim/mmx64.efi
