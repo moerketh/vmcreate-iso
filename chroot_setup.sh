@@ -111,16 +111,29 @@ if [ -d "$KMOD_DIR/kernel" ]; then
     # SCSI transport modules; the subdirs are all physical hardware.
     find "$KMOD_DIR/kernel/drivers/scsi" -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} +
     rm -rf "$KMOD_DIR/kernel/drivers/target"
-    # zfs and network filesystems (targets needing them load their own)
-    rm -rf "$KMOD_DIR/kernel/fs/zfs" "$KMOD_DIR/kernel/fs/nfs" "$KMOD_DIR/kernel/fs/nfsd" \
+    # zfs (kernel/zfs on Ubuntu — NOT fs/zfs) and network filesystems
+    # (targets needing them load their own)
+    rm -rf "$KMOD_DIR/kernel/zfs" "$KMOD_DIR/kernel/fs/zfs" \
+           "$KMOD_DIR/kernel/fs/nfs" "$KMOD_DIR/kernel/fs/nfsd" \
            "$KMOD_DIR/kernel/fs/smb" "$KMOD_DIR/kernel/fs/ceph" "$KMOD_DIR/kernel/fs/dlm" \
            "$KMOD_DIR/kernel/fs/gfs2" "$KMOD_DIR/kernel/fs/ocfs2" \
+           "$KMOD_DIR/kernel/fs/9p" \
            "$KMOD_DIR/kernel/net/sunrpc"
     # Protocol stacks and net filtering a deployment VM never uses
+    # (netfilter included: VMCreate's eth1 firewall helper is command -v
+    # guarded and neither nft nor iptables is installed on the ISO)
     rm -rf "$KMOD_DIR/kernel/net/sched" "$KMOD_DIR/kernel/net/sctp" "$KMOD_DIR/kernel/net/tipc" \
            "$KMOD_DIR/kernel/net/rxrpc" "$KMOD_DIR/kernel/net/can" \
            "$KMOD_DIR/kernel/net/openvswitch" "$KMOD_DIR/kernel/net/mpls" \
-           "$KMOD_DIR/kernel/net/6lowpan" "$KMOD_DIR/kernel/net/rds"
+           "$KMOD_DIR/kernel/net/6lowpan" "$KMOD_DIR/kernel/net/rds" \
+           "$KMOD_DIR/kernel/net/atm" "$KMOD_DIR/kernel/net/dccp" \
+           "$KMOD_DIR/kernel/net/ieee802154" "$KMOD_DIR/kernel/net/9p" \
+           "$KMOD_DIR/kernel/net/ceph" "$KMOD_DIR/kernel/net/netfilter"
+    # Storage/net stacks with no virtual-disk use case
+    rm -rf "$KMOD_DIR/kernel/drivers/nvme/target" "$KMOD_DIR/kernel/drivers/md/bcache" \
+           "$KMOD_DIR/kernel/drivers/net/wwan" "$KMOD_DIR/kernel/drivers/net/fddi" \
+           "$KMOD_DIR/kernel/drivers/net/xen-netback" \
+           "$KMOD_DIR/kernel/drivers/vfio" "$KMOD_DIR/kernel/drivers/vhost"
     # KVM host-side virtualization and kernel self-tests. arch/x86/crypto
     # (aesni etc.) stays: dm-crypt on targets uses it for real speedup.
     rm -rf "$KMOD_DIR/kernel/arch/x86/kvm"
@@ -156,6 +169,7 @@ assert_driver "virtio_blk.ko"                   # KVM disks (built-in on noble)
 assert_driver "virtio_scsi.ko"
 assert_driver "virtio_net.ko"
 assert_driver "vmw_vsock_virtio_transport.ko"   # AF_VSOCK transport on KVM
+assert_driver "vmw_pvscsi.ko"                   # VMware paravirtual SCSI (VMware targets)
 assert_driver "simpledrm.ko"                    # splash display on the UEFI GOP (drivers/gpu is stripped)
 assert_driver "loop.ko"                         # casper mounts the squashfs via loop
 assert_driver "overlay.ko"                      # casper rootfs overlay
@@ -191,11 +205,17 @@ EON
 # network to be "online".
 systemctl enable systemd-networkd 2>/dev/null || true
 
-# Bootloaders for UEFI/Secure Boot (Gen 2 only — no BIOS support)
-apt-get install -y --no-install-recommends grub-efi-amd64-signed shim-signed
+# NOTE: no bootloader packages in the chroot. The ISO's EFI image is built
+# from the BUILD HOST's signed loaders (build.sh), and targets get their
+# own GRUB installed from inside their chroot (VMCreate's install_grub.sh)
+# — a chroot grub-install would be broken anyway once the module trees are
+# stripped. The purge below cleans up if a future dependency ever drags
+# them back in (it is a no-op when they are absent).
 
-# Disk tools VMCreate drives remotely
-apt-get install -y --no-install-recommends partclone gdisk e2fsprogs dosfstools rsync lvm2 efibootmgr grub2-common util-linux parted psmisc
+# Disk tools VMCreate drives remotely (grub2-common was dropped: targets
+# get their own GRUB inside their chroot, and update-grub/grub-install
+# would be broken here anyway once the module trees are stripped)
+apt-get install -y --no-install-recommends partclone gdisk e2fsprogs dosfstools rsync lvm2 efibootmgr util-linux parted psmisc
 
 # Install btrfs-progs for btrfs root filesystem support (e.g. Parrot OS)
 apt-get install -y --no-install-recommends btrfs-progs
@@ -290,6 +310,25 @@ systemctl mask plymouth-quit.service plymouth-quit-wait.service getty@tty1.servi
 # alone is 11.7 MB and mkinitramfs copies it into the initrd as well, so
 # it ships in BOTH images when left here.
 rm -rf /usr/lib/udev/hwdb.d /usr/lib/udev/hwdb.bin
+# lvm2/btrfs-progs install initramfs hooks that pull the lvm and btrfs
+# tools plus their modules into every initrd (~4 MB + xfs/btrfs modules).
+# casper boots from a squashfs on the ISO — no lvm/btrfs needed at initrd
+# stage. The tools stay in the rootfs for VMCreate's chroot workflows.
+rm -f /usr/share/initramfs-tools/hooks/lvm2 /usr/share/initramfs-tools/hooks/btrfs \
+      /usr/share/initramfs-tools/scripts/init-bottom/lvm2 \
+      /usr/share/initramfs-tools/scripts/local-premount/btrfs
+# Fonts: plymouth's theme uses only Ubuntu + Ubuntu Mono (asserted in the
+# initrd below). The plymouth hook copies font files into the initrd, so
+# this has to happen before the final rebuild to trim BOTH images.
+apt-get purge -y fonts-dejavu-core fonts-dejavu-extra 2>/dev/null || true
+rm -rf /usr/share/fonts/truetype/dejavu
+rm -f /usr/share/fonts/truetype/ubuntu/UbuntuSans*.ttf
+# file(1) + libmagic pull ~8.5 MB into the image; VMCreate's single use of
+# file(1) runs inside the TARGET chroot, not on the ISO. Purge properly —
+# rm'ing just the DB would leave a broken /usr/bin/file behind. Done before
+# the final rebuild so nothing of it can ride into the initrd either.
+apt-get purge -y file libmagic1t64 libmagic-mgc
+rm -f /usr/lib/file/magic.mgc /usr/share/misc/magic.mgc /usr/share/file/magic.mgc
 
 # Final initrd: the only generation that actually ships. Restore the trigger
 # first — update-initramfs -u honors update_initramfs=no. (-c from the kernel
@@ -366,10 +405,13 @@ rm -rf /usr/share/i18n /usr/lib/x86_64-linux-gnu/gconv
 # from inside the target chroot (VMCreate's install_grub.sh apt/pacman/dnf
 # installs there); the live ISO boots via the signed loaders in
 # /usr/lib/grub/x86_64-efi-signed — a different package, kept.
+# The full purge below supersedes the rm (kept for belt and braces if the
+# package set ever changes).
 rm -rf /usr/lib/grub/x86_64-efi /usr/lib/grub/i386-pc /usr/share/grub
-# file(1) magic DB — file(1) itself is not installed on this image
-rm -f /usr/lib/*/file/magic.mgc /usr/share/misc/magic.mgc
-
+# EFI loader packages: the ISO image is built from the build host's
+# signed loaders, so the chroot's copies are pure duplication (~4.4 MB of
+# netboot/CD loader variants alone).
+apt-get purge -y grub-efi-amd64-bin grub-efi-amd64-signed shim-signed grub2-common
 # The purges above remove reverse dependencies silently; make sure the
 # splash stack survived them.
 for pkg in plymouth plymouth-label; do
@@ -378,6 +420,34 @@ for pkg in plymouth plymouth-label; do
         exit 1
     }
 done
+
+# ── Negative asserts ────────────────────────────────────────────────
+# The positive asserts above prove required drivers exist; these prove the
+# stripped payload stayed gone. Both of this round's silent no-ops (zfs at
+# kernel/zfs rather than fs/zfs; magic.mgc at /usr/lib/file with no arch
+# folder) shipped because rm -rf on a wrong path fails silently — assert
+# here, after every cleanup has run, so a wrong path can never pass again.
+assert_absent() {
+    local leaked=""
+    for path; do
+        # shellcheck disable=SC2086
+        ls -d $path >/dev/null 2>&1 && leaked="$leaked $path"
+    done
+    if [ -n "$leaked" ]; then
+        echo "ERROR: stripped payload leaked into the image:$leaked" >&2
+        exit 1
+    fi
+}
+assert_absent /lib/modules/*/kernel/zfs /lib/modules/*/kernel/fs/zfs
+assert_absent /lib/modules/*/kernel/fs/nfs /lib/modules/*/kernel/fs/smb
+assert_absent /lib/modules/*/kernel/fs/9p /lib/modules/*/kernel/net/9p
+assert_absent /lib/modules/*/kernel/drivers/net/ethernet
+assert_absent /lib/modules/*/kernel/net/netfilter /lib/modules/*/kernel/net/sched
+assert_absent /usr/lib/udev/hwdb.bin /usr/lib/udev/hwdb.d
+assert_absent /usr/lib/file/magic.mgc /usr/share/misc/magic.mgc /usr/bin/file
+assert_absent /usr/lib/grub/x86_64-efi /usr/share/grub
+assert_absent /usr/share/fonts/truetype/dejavu
+echo "Negative asserts OK — stripped payload stayed gone."
 
 # More cleanup
 apt-get autoremove -y

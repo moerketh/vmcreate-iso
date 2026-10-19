@@ -227,22 +227,17 @@ printf $(sudo du -sx --block-size=1 chroot | cut -f1) > image/casper/filesystem.
 # Access image directory
 cd image
 
-# Copy custom grub config
+# Copy custom grub config (goes into the EFI boot image below)
 sudo cp ../grub.cfg isolinux/grub.cfg
-
-# Copy EFI loaders
-sudo cp /usr/lib/shim/shimx64.efi.signed isolinux/bootx64.efi
-sudo cp /usr/lib/shim/mmx64.efi isolinux/mmx64.efi
-sudo cp /usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed isolinux/grubx64.efi
 
 # Create EFI boot image — sized to fit: the fixed 10 MB image held ~4.5 MB
 # of loaders. It lives only in the appended GPT partition (the /EFI grafts
 # below serve the ISO filesystem itself), so every MB here is a MB in the
 # ISO download. The 256 KiB headroom absorbs upstream loader size growth.
 EFI_SRC_FILES=(
-    ../chroot/usr/lib/shim/shimx64.efi.signed
-    ../chroot/usr/lib/shim/mmx64.efi
-    ../chroot/usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed
+    /usr/lib/shim/shimx64.efi.signed
+    /usr/lib/shim/mmx64.efi
+    /usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed
     isolinux/grub.cfg
 )
 # FAT16 needs >=4085 clusters, so force 512-byte clusters (-s 1) and keep a
@@ -259,9 +254,9 @@ sudo mkdir -p /mnt/efi
 sudo mount "${mloop}" /mnt/efi
 sudo mkdir -p /mnt/efi/EFI/boot
 sudo mkdir -p /mnt/efi/EFI/ubuntu
-sudo cp ../chroot/usr/lib/shim/shimx64.efi.signed /mnt/efi/EFI/boot/bootx64.efi
-sudo cp ../chroot/usr/lib/shim/mmx64.efi /mnt/efi/EFI/boot/mmx64.efi
-sudo cp ../chroot/usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed /mnt/efi/EFI/boot/grubx64.efi
+sudo cp /usr/lib/shim/shimx64.efi.signed /mnt/efi/EFI/boot/bootx64.efi
+sudo cp /usr/lib/shim/mmx64.efi /mnt/efi/EFI/boot/mmx64.efi
+sudo cp /usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed /mnt/efi/EFI/boot/grubx64.efi
 sudo cp ./isolinux/grub.cfg /mnt/efi/EFI/ubuntu/grub.cfg
 sudo umount /mnt/efi
 sudo losetup -d "${mloop}"
@@ -288,12 +283,7 @@ sudo xorriso \
   -iso_mbr_part_type a2a0d0ebe5b9334487c068b6b72699c7 \
   -e '--interval:appended_partition_2:::' \
   -exclude isolinux \
-  -graft-points \
-      "/EFI/boot/bootx64.efi=isolinux/bootx64.efi" \
-      "/EFI/boot/mmx64.efi=isolinux/mmx64.efi" \
-      "/EFI/boot/grubx64.efi=isolinux/grubx64.efi" \
-      "/EFI/ubuntu/grub.cfg=isolinux/grub.cfg" \
-      "."
+  "."
 
 cd ..
 echo "ISO created at ${WORK_DIR}/${ISO_NAME}"
