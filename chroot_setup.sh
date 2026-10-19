@@ -320,10 +320,10 @@ rm -f /usr/share/initramfs-tools/hooks/lvm2 /usr/share/initramfs-tools/hooks/btr
 # Fonts: plymouth's theme uses only Ubuntu + Ubuntu Mono (asserted in the
 # initrd below). The plymouth hook copies font files into the initrd, so
 # this has to happen before the final rebuild to trim BOTH images. NOTE:
-# fonts-dejavu-core must stay installed — casper depends on it (a purge
-# cascades casper away!) — so remove its files, not the package; dejavu-mono
-# (no reverse deps) can be purged.
-apt-get purge -y fonts-dejavu-mono 2>/dev/null || true
+# fonts-dejavu-core AND -mono must stay INSTALLED — casper Depends on
+# dejavu-core, and purging either cascades casper off the image (apt swaps
+# in fonts-liberation and removes casper). Removing the files keeps the
+# dependency satisfied with zero glyphs shipped.
 rm -rf /usr/share/fonts/truetype/dejavu
 rm -f /usr/share/fonts/truetype/ubuntu/UbuntuSans*.ttf
 # file(1) + libmagic pull ~8.5 MB into the image; VMCreate's single use of
