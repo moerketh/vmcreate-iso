@@ -326,11 +326,12 @@ rm -f /usr/share/initramfs-tools/hooks/lvm2 /usr/share/initramfs-tools/hooks/btr
 # dependency satisfied with zero glyphs shipped.
 rm -rf /usr/share/fonts/truetype/dejavu
 rm -f /usr/share/fonts/truetype/ubuntu/UbuntuSans*.ttf
-# file(1) + libmagic pull ~8.5 MB into the image; VMCreate's single use of
-# file(1) runs inside the TARGET chroot, not on the ISO. Purge properly —
-# rm'ing just the DB would leave a broken /usr/bin/file behind. Done before
-# the final rebuild so nothing of it can ride into the initrd either.
-apt-get purge -y file libmagic1t64 libmagic-mgc
+# file(1): casper has a hard Depends: file on noble, so the packages stay
+# installed (a purge cascades casper off the image). But nothing in
+# casper's initramfs scripts or hooks actually runs file(1), and no hook
+# copies it or its DB into the initrd — VMCreate's only file(1) use runs
+# inside TARGET chroots. Drop the 8.1 MB database files instead; the
+# 31 KB /usr/bin/file binary stays to keep the dependency satisfied.
 rm -f /usr/lib/file/magic.mgc /usr/share/misc/magic.mgc /usr/share/file/magic.mgc
 
 # Final initrd: the only generation that actually ships. Restore the trigger
@@ -448,7 +449,7 @@ assert_absent /lib/modules/*/kernel/fs/9p /lib/modules/*/kernel/net/9p
 assert_absent /lib/modules/*/kernel/drivers/net/ethernet
 assert_absent /lib/modules/*/kernel/net/netfilter /lib/modules/*/kernel/net/sched
 assert_absent /usr/lib/udev/hwdb.bin /usr/lib/udev/hwdb.d
-assert_absent /usr/lib/file/magic.mgc /usr/share/misc/magic.mgc /usr/bin/file
+assert_absent /usr/lib/file/magic.mgc /usr/share/misc/magic.mgc /usr/share/file/magic.mgc
 assert_absent /usr/lib/grub/x86_64-efi /usr/share/grub
 assert_absent /usr/share/fonts/truetype/dejavu
 echo "Negative asserts OK — stripped payload stayed gone."
