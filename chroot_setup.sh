@@ -319,8 +319,11 @@ rm -f /usr/share/initramfs-tools/hooks/lvm2 /usr/share/initramfs-tools/hooks/btr
       /usr/share/initramfs-tools/scripts/local-premount/btrfs
 # Fonts: plymouth's theme uses only Ubuntu + Ubuntu Mono (asserted in the
 # initrd below). The plymouth hook copies font files into the initrd, so
-# this has to happen before the final rebuild to trim BOTH images.
-apt-get purge -y fonts-dejavu-core fonts-dejavu-extra 2>/dev/null || true
+# this has to happen before the final rebuild to trim BOTH images. NOTE:
+# fonts-dejavu-core must stay installed — casper depends on it (a purge
+# cascades casper away!) — so remove its files, not the package; dejavu-mono
+# (no reverse deps) can be purged.
+apt-get purge -y fonts-dejavu-mono 2>/dev/null || true
 rm -rf /usr/share/fonts/truetype/dejavu
 rm -f /usr/share/fonts/truetype/ubuntu/UbuntuSans*.ttf
 # file(1) + libmagic pull ~8.5 MB into the image; VMCreate's single use of
@@ -413,10 +416,11 @@ rm -rf /usr/lib/grub/x86_64-efi /usr/lib/grub/i386-pc /usr/share/grub
 # netboot/CD loader variants alone).
 apt-get purge -y grub-efi-amd64-bin grub-efi-amd64-signed shim-signed grub2-common
 # The purges above remove reverse dependencies silently; make sure the
-# splash stack survived them.
-for pkg in plymouth plymouth-label; do
+# packages the ISO literally cannot boot or drive without survived them
+# (casper was once cascaded away by a fonts purge).
+for pkg in casper plymouth plymouth-label; do
     dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q "install ok installed" || {
-        echo "ERROR: splash: $pkg was removed by a later purge" >&2
+        echo "ERROR: $pkg was removed by a later purge" >&2
         exit 1
     }
 done
@@ -453,6 +457,16 @@ echo "Negative asserts OK — stripped payload stayed gone."
 apt-get autoremove -y
 apt-get clean -y
 rm -rf /tmp/* /var/tmp/* /var/lib/apt/lists/* /var/cache/apt/archives/* /var/log/* /var/cache/debconf/*
+
+# autoremove can cascade packages away just like the purges above (it once
+# took sudo with a casper dependency chain); re-check the boot-critical set
+# AFTER it, right before the image is sealed.
+for pkg in casper plymouth plymouth-label; do
+    dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q "install ok installed" || {
+        echo "ERROR: $pkg was removed by a later purge or autoremove" >&2
+        exit 1
+    }
+done
 
 rm -f /var/lib/dbus/machine-id
 truncate -s 0 /etc/machine-id
