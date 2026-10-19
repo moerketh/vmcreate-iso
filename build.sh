@@ -272,7 +272,9 @@ sudo rm -rf /mnt/efi
 sudo rm -f md5sum.txt
 sudo /bin/bash -c "(find . -type f -print0 | xargs -0 md5sum | grep -v -e 'isolinux' -e 'md5sum.txt' > md5sum.txt)"
 
-# Create ISO (UEFI-only, no BIOS El Torito)
+# Create ISO (UEFI-only, no BIOS El Torito): a single El Torito boot entry
+# points straight at the appended GPT partition that carries efiboot.img,
+# so the image exists exactly once in the ISO.
 sudo xorriso \
   -as mkisofs \
   -iso-level 3 \
@@ -280,13 +282,10 @@ sudo xorriso \
   -J -J -joliet-long \
   -volid "VMCreate ISO" \
   -output "../${ISO_NAME}" \
-  -eltorito-alt-boot \
   -no-emul-boot \
-  -e isolinux/efiboot.img \
   -append_partition 2 28732ac11ff8d211ba4b00a0c93ec93b isolinux/efiboot.img \
   -appended_part_as_gpt \
   -iso_mbr_part_type a2a0d0ebe5b9334487c068b6b72699c7 \
-  -m "isolinux/efiboot.img" \
   -e '--interval:appended_partition_2:::' \
   -exclude isolinux \
   -graft-points \

@@ -10,19 +10,37 @@ deb http://archive.ubuntu.com/ubuntu/ noble-updates main restricted universe mul
 deb http://security.ubuntu.com/ubuntu/ noble-security main restricted universe multiverse
 EOT
 
-# Initrd compression: the default (zstd level 1) optimizes for boot speed,
-# but toram copies the initrd once at boot and every MB ships in the ISO
-# download. xz roughly halves the initrd. A conf.d/ drop-in overrides
-# initramfs.conf and survives package upgrades; it is written before any
-# install so every update-initramfs run (kernel postinst, plymouth, the
-# explicit one below) uses it.
+# Initrd compression: default is zstd level 1 — optimized for speed, ~44 MB.
+# Level 19 shrinks the initrd a lot for a few seconds of build time while
+# keeping zstd's fast kernel-side unpacking: the kernel decompresses the
+# initrd single-threaded on EVERY boot (GRUB loads it from the ISO; toram
+# only applies to the squashfs), where xz is several times slower for only
+# ~2 MB more savings. A conf.d/ drop-in overrides initramfs.conf and
+# survives package upgrades; written before any install so every
+# update-initramfs pass (kernel postinst, plymouth, the explicit one below)
+# uses it.
 mkdir -p /etc/initramfs-tools/conf.d
-echo "COMPRESS=xz" > /etc/initramfs-tools/conf.d/vmcreate-compress
+printf 'COMPRESS=zstd\nCOMPRESSLEVEL=19\n' > /etc/initramfs-tools/conf.d/vmcreate-compress
 
 apt-get update -y
 apt-get upgrade -y
 apt-get install -y --no-install-recommends dbus
 dbus-uuidgen > /var/lib/dbus/machine-id
+
+# Install initramfs-tools on its own so its conffile exists BEFORE the
+# kernel: every later package install (grub, disk tools, tor, openssh,
+# plymouth) fires an update-initramfs trigger, and each xz/zstd-19 rebuild
+# costs 10-40 s — six rebuilds per build otherwise. update_initramfs=no
+# makes those trigger runs (-u) no-ops; only the final explicit rebuild
+# below (after restoring =yes) produces the initrd that ships. Writing the
+# conffile earlier would not survive: dpkg replaces pre-written conffiles
+# on fresh install (it parks them as .dpkg-old).
+apt-get install -y --no-install-recommends initramfs-tools
+sed -i 's/^update_initramfs=.*/update_initramfs=no/' /etc/initramfs-tools/update-initramfs.conf
+grep -q '^update_initramfs=no$' /etc/initramfs-tools/update-initramfs.conf || {
+    echo "ERROR: failed to disable update_initramfs" >&2
+    exit 1
+}
 
 # Install kernel, live tools, and necessary packages
 # Resolve the specific kernel version from the linux-virtual meta-package
@@ -226,6 +244,10 @@ printf '[Daemon]\nTheme=vmcreate\nShowDelay=0\n' > /etc/plymouth/plymouthd.conf
 # getty@tty1 would compete with it for the console (and there is no
 # password login on this ISO anyway).
 systemctl mask plymouth-quit.service plymouth-quit-wait.service getty@tty1.service
+# Final initrd: the only generation that actually ships. Restore the trigger
+# first — update-initramfs -u honors update_initramfs=no. (-c from the kernel
+# postinst ignores it, which is why that first generation is unavoidable.)
+sed -i 's/^update_initramfs=.*/update_initramfs=yes/' /etc/initramfs-tools/update-initramfs.conf
 update-initramfs -u -k all
 
 # Fail the build unless the splash actually made it into the initrd.
