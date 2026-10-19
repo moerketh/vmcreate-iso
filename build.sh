@@ -194,8 +194,9 @@ sudo cp "chroot/boot/vmlinuz-${KERNEL_VERSION}" image/casper/vmlinuz
 sudo cp "chroot/boot/initrd.img-${KERNEL_VERSION}" image/casper/initrd
 
 # Measure as we build: sizes here are what the ISO download actually pays,
-# and toram pays the squashfs+initrd again at every boot.
-measure() { sudo du -h "$1" | cut -f1; }
+# and toram pays the squashfs+initrd again at every boot. --apparent-size:
+# truncated/sparse files (efiboot.img) would otherwise report near zero.
+measure() { sudo du -h --apparent-size "$1" | cut -f1; }
 printf 'SIZE kernel  %8s  image/casper/vmlinuz\n' "$(measure image/casper/vmlinuz)"
 printf 'SIZE initrd  %8s  image/casper/initrd\n' "$(measure image/casper/initrd)"
 
@@ -246,7 +247,8 @@ EFI_SRC_FILES=(
 )
 # FAT16 needs >=4085 clusters, so force 512-byte clusters (-s 1) and keep a
 # 3 MiB floor (6144 clusters) — that is why the old fixed image was 10 MB.
-EFI_IMG_BYTES=$(( $(du -bc "${EFI_SRC_FILES[@]}" | tail -1 | cut -f1) + 256*1024 ))
+# -L: shim's loader is an update-alternatives symlink; measure the real file.
+EFI_IMG_BYTES=$(( $(du -bcL "${EFI_SRC_FILES[@]}" | tail -1 | cut -f1) + 256*1024 ))
 if [ "$EFI_IMG_BYTES" -lt 3145728 ]; then EFI_IMG_BYTES=3145728; fi
 EFI_IMG_BYTES=$(( (EFI_IMG_BYTES + 511) / 512 * 512 ))
 truncate -s "$EFI_IMG_BYTES" ${WORK_DIR}/image/isolinux/efiboot.img
