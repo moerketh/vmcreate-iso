@@ -215,7 +215,7 @@ systemctl enable systemd-networkd 2>/dev/null || true
 # Disk tools VMCreate drives remotely (grub2-common was dropped: targets
 # get their own GRUB inside their chroot, and update-grub/grub-install
 # would be broken here anyway once the module trees are stripped)
-apt-get install -y --no-install-recommends partclone gdisk e2fsprogs dosfstools rsync lvm2 efibootmgr util-linux parted psmisc
+apt-get install -y --no-install-recommends sudo partclone gdisk e2fsprogs dosfstools rsync lvm2 efibootmgr util-linux parted psmisc
 
 # Install btrfs-progs for btrfs root filesystem support (e.g. Parrot OS)
 apt-get install -y --no-install-recommends btrfs-progs
@@ -332,7 +332,14 @@ rm -f /usr/share/fonts/truetype/ubuntu/UbuntuSans*.ttf
 # copies it or its DB into the initrd — VMCreate's only file(1) use runs
 # inside TARGET chroots. Drop the 8.1 MB database files instead; the
 # 31 KB /usr/bin/file binary stays to keep the dependency satisfied.
+# Consequence: /usr/bin/file exists but errors out ("could not find any
+# valid magic files") — harmless, nothing on the ISO invokes it.
 rm -f /usr/lib/file/magic.mgc /usr/share/misc/magic.mgc /usr/share/file/magic.mgc
+
+# initramfs trim hook: deletes xfs/btrfs/iscsi modules from the staged
+# initrd before mkinitramfs runs depmod (hooks run first). The zz- prefix
+# is cosmetic — CONFDIR hooks run after the system hooks regardless.
+install -m 755 /tmp/initramfs/zz-vmcreate-trim /etc/initramfs-tools/hooks/
 
 # Final initrd: the only generation that actually ships. Restore the trigger
 # first — update-initramfs -u honors update_initramfs=no. (-c from the kernel
@@ -353,6 +360,13 @@ for f in usr/share/plymouth/themes/vmcreate/vmcreate.plymouth \
         exit 1
     }
 done
+# ... and unless the trim hook actually removed what it promises (a silent
+# hook no-op ships 10 MB of dead modules, same failure class as the
+# wrong-path rm -rf's caught by assert_absent below).
+if grep -qE 'kernel/fs/(xfs|btrfs)/|ipr\.ko' /tmp/initrd.list; then
+    echo "ERROR: initrd trim hook did not fire (xfs/btrfs/ipr still present)" >&2
+    exit 1
+fi
 for unit in plymouth-quit.service plymouth-quit-wait.service; do
     state=$(systemctl is-enabled "$unit" 2>/dev/null || true)
     [ "$state" = "masked" ] || {
@@ -416,15 +430,34 @@ rm -rf /usr/lib/grub/x86_64-efi /usr/lib/grub/i386-pc /usr/share/grub
 # signed loaders, so the chroot's copies are pure duplication (~4.4 MB of
 # netboot/CD loader variants alone).
 apt-get purge -y grub-efi-amd64-bin grub-efi-amd64-signed shim-signed grub2-common
-# The purges above remove reverse dependencies silently; make sure the
-# packages the ISO literally cannot boot or drive without survived them
-# (casper was once cascaded away by a fonts purge).
-for pkg in casper plymouth plymouth-label; do
-    dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q "install ok installed" || {
-        echo "ERROR: $pkg was removed by a later purge" >&2
-        exit 1
-    }
-done
+
+# ── Required-package asserts ────────────────────────────────────────
+# Purges and autoremove cascade reverse dependencies away silently
+# (casper was once taken by a fonts purge, sudo by an autoremove). This
+# is the set VMCreate actually drives once booted — asserted once here
+# and again after the autoremove below (one function so they cannot
+# drift apart):
+#   casper plymouth plymouth-label  the live boot itself and the splash
+#   sudo                            passwordless root for the vmcreate user
+#   openssh-server                  sshd behind sshd-vsock.socket
+#   linux-cloud-tools-<kver>        hv_kvp_daemon — VMCreate's key injection
+#   partclone lvm2 btrfs-progs      disk deployment tools
+#   tor                             tor+ APT sources on targets (Whonix)
+assert_required_packages() {
+    local pkg
+    local pkgs=(
+        casper plymouth plymouth-label sudo openssh-server
+        "linux-cloud-tools-${KVER_SHORT}"
+        partclone lvm2 btrfs-progs tor
+    )
+    for pkg in "${pkgs[@]}"; do
+        dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q "install ok installed" || {
+            echo "ERROR: required package $pkg is not installed (purge/autoremove cascade?)" >&2
+            exit 1
+        }
+    done
+}
+assert_required_packages
 
 # ── Negative asserts ────────────────────────────────────────────────
 # The positive asserts above prove required drivers exist; these prove the
@@ -459,15 +492,9 @@ apt-get autoremove -y
 apt-get clean -y
 rm -rf /tmp/* /var/tmp/* /var/lib/apt/lists/* /var/cache/apt/archives/* /var/log/* /var/cache/debconf/*
 
-# autoremove can cascade packages away just like the purges above (it once
-# took sudo with a casper dependency chain); re-check the boot-critical set
-# AFTER it, right before the image is sealed.
-for pkg in casper plymouth plymouth-label; do
-    dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q "install ok installed" || {
-        echo "ERROR: $pkg was removed by a later purge or autoremove" >&2
-        exit 1
-    }
-done
+# autoremove cascades packages away just like the purges above — re-run
+# the required-package assert (the same function, so it cannot drift).
+assert_required_packages
 
 rm -f /var/lib/dbus/machine-id
 truncate -s 0 /etc/machine-id

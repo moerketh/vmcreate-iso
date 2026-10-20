@@ -1,0 +1,36 @@
+#!/bin/sh
+# initramfs hook: trim modules the live ISO never mounts at boot.
+#
+# casper only needs isofs, squashfs, overlay, loop and the disk drivers to
+# bring the system up; xfs/btrfs (8.6 MB uncompressed) and the iSCSI/IPR
+# storage transports are dead weight at initrd stage. The modules stay in
+# the ROOTFS — VMCreate uses them there when deploying xfs/btrfs targets.
+#
+# A CONFDIR hook (/etc/initramfs-tools/hooks) runs after the system hooks
+# that stage modules, and mkinitramfs runs depmod only afterwards, so
+# modules.dep stays consistent with what is left in ${DESTDIR}.
+
+PREREQ=""
+
+prereqs()
+{
+	echo "$PREREQ"
+}
+
+case "$1" in
+	prereqs)
+		prereqs
+		exit 0
+		;;
+esac
+
+# Local filesystems the initrd never mounts (casper mounts isofs+overlay;
+# squashfs and loop are built into the kernel).
+rm -rf "${DESTDIR}/lib/modules/${version}/kernel/fs/xfs" \
+       "${DESTDIR}/lib/modules/${version}/kernel/fs/btrfs"
+
+# Physical iSCSI adapters and transports: no VM exposes them as boot disks.
+find "${DESTDIR}/lib/modules/${version}/kernel/drivers/scsi" \
+     \( -name 'scsi_transport_iscsi.ko*' -o -name 'libiscsi*.ko*' \
+        -o -name 'iscsi_*.ko*' -o -name 'ipr.ko*' \) \
+     -delete 2>/dev/null || true

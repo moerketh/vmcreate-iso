@@ -97,6 +97,16 @@ fi
 sudo apt-get update
 sudo apt-get install -y debootstrap squashfs-tools xorriso grub-efi-amd64-bin grub-efi-amd64-signed shim-signed mtools dosfstools
 
+# The EFI image is built from the BUILD HOST's signed loaders, so the host
+# distro leaks into the ISO: Ubuntu's signed GRUB embeds /EFI/ubuntu (the
+# load-bearing graft below), but Debian's looks for /EFI/debian — such a
+# host would build fine and then drop to a grub> prompt at boot. Fail the
+# build here instead of at boot.
+sudo grep -aq '/EFI/ubuntu' /usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed || {
+    echo "ERROR: build host's signed GRUB does not search /EFI/ubuntu — wrong distro?" >&2
+    exit 1
+}
+
 # Bootstrap minimal Ubuntu — try multiple mirrors in case one is unreachable
 UBUNTU_MIRRORS=(
     "http://archive.ubuntu.com/ubuntu/"
@@ -171,6 +181,11 @@ sudo cp ./guest/* chroot/tmp/guest/
 sudo mkdir -p chroot/tmp/splash/vmcreate
 sudo cp ./splash/vmcreate/* chroot/tmp/splash/vmcreate/
 sudo sed -i "s|@VMCREATE_ISO_VERSION@|${BUILD_VERSION}|" chroot/tmp/splash/vmcreate/vmcreate.script
+# initramfs hook (installed by chroot_setup.sh from /tmp/initramfs/) that
+# trims xfs/btrfs/iscsi modules from the initrd — kept as a first-class
+# file like guest/ and splash/ so it is linted and visible in review.
+sudo mkdir -p chroot/tmp/initramfs
+sudo cp ./initramfs/* chroot/tmp/initramfs/
 sudo chroot chroot /bin/bash /tmp/chroot_setup.sh
 
 # Unmount
@@ -266,6 +281,10 @@ sudo mkdir -p /mnt/efi/EFI/ubuntu
 sudo cp /usr/lib/shim/shimx64.efi.signed /mnt/efi/EFI/boot/bootx64.efi
 sudo cp /usr/lib/shim/mmx64.efi /mnt/efi/EFI/boot/mmx64.efi
 sudo cp /usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed /mnt/efi/EFI/boot/grubx64.efi
+# Not read by this ISO's boot path (GRUB finds /EFI/ubuntu/grub.cfg in
+# the ISO filesystem, grafted above) — kept only as a fallback config if
+# the partition is ever extracted and booted standalone (e.g. dd'd onto
+# a USB stick's ESP). Costs 805 bytes.
 sudo cp ./isolinux/grub.cfg /mnt/efi/EFI/ubuntu/grub.cfg
 sudo umount /mnt/efi
 sudo losetup -d "${mloop}"

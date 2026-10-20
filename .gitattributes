@@ -9,3 +9,4 @@ grub.cfg text eol=lf
 *.plymouth text eol=lf
 *.py text eol=lf
 *.png binary
+initramfs/* text eol=lf
