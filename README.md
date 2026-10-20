@@ -21,9 +21,9 @@ first-NUL reader (see `lib/functions.sh` — stale heap bytes behind the
 terminator are a documented hv_kvp_daemon behavior).
 
 Kernel: `linux-virtual` (virtio + Hyper-V + VMware drivers — boots on Hyper-V
-Gen 2; QEMU/KVM untested). UEFI + Secure Boot (Microsoft-signed shim/grub
-chain); no BIOS boot. SSH user: `vmcreate` (key-only, passwordless sudo),
-matching VMCreate's default.
+Gen 2 and under QEMU/KVM with OVMF + Secure Boot). UEFI + Secure Boot
+(Microsoft-signed shim/grub chain); no BIOS boot. SSH user: `vmcreate`
+(key-only, passwordless sudo), matching VMCreate's default.
 
 ## Splash screen
 
@@ -47,7 +47,11 @@ renders on the built-in simpledrm (`drivers/gpu` is stripped), hence
 
 ## Build
 
-From a native Linux filesystem (WSL: copy out of /mnt/c first):
+From a native Linux filesystem (WSL: copy out of /mnt/c first), on an
+**Ubuntu host**: the EFI boot image embeds the host's signed grub/shim, and
+Ubuntu's signed GRUB searches for `/EFI/ubuntu/grub.cfg` — a Debian host
+builds fine but lands on a `grub>` prompt at boot (build.sh fails fast on
+this). CI pins `ubuntu-24.04` for the same reason.
 
 ```bash
 sudo apt-get install -y debootstrap squashfs-tools xorriso grub-efi-amd64-bin \
@@ -65,6 +69,8 @@ sha256 to the GitHub release. VMCreate downloads whatever release is
 build.sh          debootstrap → chroot → squashfs → ISO
 chroot_setup.sh   runs inside the chroot: kernel, sshd, vsock socket units
 guest/            systemd units + tmpfiles, first-class so CI verifies them
+initramfs/        initramfs hook trimming xfs/btrfs/iscsi modules from the
+                  initrd (they stay in the rootfs for target deployments)
 splash/           Plymouth theme (vmcreate/) + render.py that generates it
 autorun/          inject_ssh_key.sh — the only boot-time logic
 lib/functions.sh  log + read_kvp_field (first-NUL KVP reader)
