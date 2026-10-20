@@ -10,10 +10,37 @@ deb http://archive.ubuntu.com/ubuntu/ noble-updates main restricted universe mul
 deb http://security.ubuntu.com/ubuntu/ noble-security main restricted universe multiverse
 EOT
 
+# Initrd compression: default is zstd level 1 — optimized for speed, ~44 MB.
+# Level 19 shrinks the initrd a lot for a few seconds of build time while
+# keeping zstd's fast kernel-side unpacking: the kernel decompresses the
+# initrd single-threaded on EVERY boot (GRUB loads it from the ISO; toram
+# only applies to the squashfs), where xz is several times slower for only
+# ~2 MB more savings. A conf.d/ drop-in overrides initramfs.conf and
+# survives package upgrades; written before any install so every
+# update-initramfs pass (kernel postinst, plymouth, the explicit one below)
+# uses it.
+mkdir -p /etc/initramfs-tools/conf.d
+printf 'COMPRESS=zstd\nCOMPRESSLEVEL=19\n' > /etc/initramfs-tools/conf.d/vmcreate-compress
+
 apt-get update -y
 apt-get upgrade -y
 apt-get install -y --no-install-recommends dbus
 dbus-uuidgen > /var/lib/dbus/machine-id
+
+# Install initramfs-tools on its own so its conffile exists BEFORE the
+# kernel: every later package install (grub, disk tools, tor, openssh,
+# plymouth) fires an update-initramfs trigger, and each xz/zstd-19 rebuild
+# costs 10-40 s — six rebuilds per build otherwise. update_initramfs=no
+# makes those trigger runs (-u) no-ops; only the final explicit rebuild
+# below (after restoring =yes) produces the initrd that ships. Writing the
+# conffile earlier would not survive: dpkg replaces pre-written conffiles
+# on fresh install (it parks them as .dpkg-old).
+apt-get install -y --no-install-recommends initramfs-tools
+sed -i 's/^update_initramfs=.*/update_initramfs=no/' /etc/initramfs-tools/update-initramfs.conf
+grep -q '^update_initramfs=no$' /etc/initramfs-tools/update-initramfs.conf || {
+    echo "ERROR: failed to disable update_initramfs" >&2
+    exit 1
+}
 
 # Install kernel, live tools, and necessary packages
 # Resolve the specific kernel version from the linux-virtual meta-package
@@ -32,17 +59,26 @@ fi
 echo "Resolved kernel version: $KVER"
 DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     linux-image-${KVER} linux-modules-${KVER} linux-cloud-tools-${KVER} \
-    casper coreutils systemd-sysv iproute2 zstd
+    casper coreutils systemd-sysv iproute2 zstd xz-utils
 
 # ── Strip kernel modules not needed in VMs ───────────────────────────
 # Generic distro kernels ship hundreds of modules for physical hosts.
-# The live ISO only needs the virtual drivers (Hyper-V, virtio), storage,
-# filesystems, and basic networking. Removing the rest saves 30-50 MB in
-# the squashfs. The driver whitelist assert below runs after this pass.
+# The live ISO only needs the virtual drivers (Hyper-V, virtio, VMware),
+# storage, local filesystems and basic networking. VMCreate never touches
+# zfs or network filesystems on the target (its scripts install the
+# target's own kernel userspace from inside the target chroot), and the
+# target's GRUB is likewise the target's own — the physical-controller
+# and NIC trees below are pure dead weight. The driver whitelist assert
+# below runs after this pass.
 KMOD_DIR=$(find /lib/modules -maxdepth 1 -mindepth 1 -type d | head -n1)
 if [ -d "$KMOD_DIR/kernel" ]; then
     echo "Stripping unnecessary kernel modules from $KMOD_DIR ..."
-    # Remove large driver subtrees that are irrelevant in VMs
+    # Decompress .ko.zst first: noble ships modules zstd-compressed, and xz
+    # (squashfs) / zstd-19 (initrd, see the COMPRESS drop-in above) cannot
+    # shrink data that is already compressed. Decompressing also makes the
+    # name-based cleanups below see plain .ko files.
+    find "$KMOD_DIR" -name '*.ko.zst' -exec unzstd --rm -q {} +
+    # Physical GPUs, wireless, media, USB, sound, sensors, staging, ...
     rm -rf "$KMOD_DIR/kernel/drivers/gpu"
     rm -rf "$KMOD_DIR/kernel/drivers/net/wireless"
     rm -rf "$KMOD_DIR/kernel/drivers/bluetooth"
@@ -67,6 +103,41 @@ if [ -d "$KMOD_DIR/kernel" ]; then
     rm -rf "$KMOD_DIR/kernel/net/bluetooth"
     rm -rf "$KMOD_DIR/kernel/net/mac80211"
     rm -rf "$KMOD_DIR/kernel/net/nfc"
+    # Physical NICs (mlx5, bnx2x, i40e, ixgbe, ...): the virtual NICs a VM
+    # boots on — hv_netvsc, virtio_net, vmxnet3 — live outside this tree.
+    rm -rf "$KMOD_DIR/kernel/drivers/net/ethernet"
+    # Physical FC/SAS raid controllers: keep the top-level .ko files a VM
+    # needs (sd_mod, sr_mod, virtio_scsi, hv_storvsc, vmw_pvscsi) and the
+    # SCSI transport modules; the subdirs are all physical hardware.
+    find "$KMOD_DIR/kernel/drivers/scsi" -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} +
+    rm -rf "$KMOD_DIR/kernel/drivers/target"
+    # zfs (kernel/zfs on Ubuntu — NOT fs/zfs) and network filesystems
+    # (targets needing them load their own)
+    rm -rf "$KMOD_DIR/kernel/zfs" "$KMOD_DIR/kernel/fs/zfs" \
+           "$KMOD_DIR/kernel/fs/nfs" "$KMOD_DIR/kernel/fs/nfsd" \
+           "$KMOD_DIR/kernel/fs/smb" "$KMOD_DIR/kernel/fs/ceph" "$KMOD_DIR/kernel/fs/dlm" \
+           "$KMOD_DIR/kernel/fs/gfs2" "$KMOD_DIR/kernel/fs/ocfs2" \
+           "$KMOD_DIR/kernel/fs/9p" \
+           "$KMOD_DIR/kernel/net/sunrpc"
+    # Protocol stacks and net filtering a deployment VM never uses
+    # (netfilter included: VMCreate's eth1 firewall helper is command -v
+    # guarded and neither nft nor iptables is installed on the ISO)
+    rm -rf "$KMOD_DIR/kernel/net/sched" "$KMOD_DIR/kernel/net/sctp" "$KMOD_DIR/kernel/net/tipc" \
+           "$KMOD_DIR/kernel/net/rxrpc" "$KMOD_DIR/kernel/net/can" \
+           "$KMOD_DIR/kernel/net/openvswitch" "$KMOD_DIR/kernel/net/mpls" \
+           "$KMOD_DIR/kernel/net/6lowpan" "$KMOD_DIR/kernel/net/rds" \
+           "$KMOD_DIR/kernel/net/atm" "$KMOD_DIR/kernel/net/dccp" \
+           "$KMOD_DIR/kernel/net/ieee802154" "$KMOD_DIR/kernel/net/9p" \
+           "$KMOD_DIR/kernel/net/ceph" "$KMOD_DIR/kernel/net/netfilter"
+    # Storage/net stacks with no virtual-disk use case
+    rm -rf "$KMOD_DIR/kernel/drivers/nvme/target" "$KMOD_DIR/kernel/drivers/md/bcache" \
+           "$KMOD_DIR/kernel/drivers/net/wwan" "$KMOD_DIR/kernel/drivers/net/fddi" \
+           "$KMOD_DIR/kernel/drivers/net/xen-netback" \
+           "$KMOD_DIR/kernel/drivers/vfio" "$KMOD_DIR/kernel/drivers/vhost"
+    # KVM host-side virtualization and kernel self-tests. arch/x86/crypto
+    # (aesni etc.) stays: dm-crypt on targets uses it for real speedup.
+    rm -rf "$KMOD_DIR/kernel/arch/x86/kvm"
+    find "$KMOD_DIR" -name 'test_*.ko' -delete
     # Rebuild module dependency map
     depmod -a "$(basename "$KMOD_DIR")"
     echo "Kernel module stripping complete."
@@ -98,7 +169,21 @@ assert_driver "virtio_blk.ko"                   # KVM disks (built-in on noble)
 assert_driver "virtio_scsi.ko"
 assert_driver "virtio_net.ko"
 assert_driver "vmw_vsock_virtio_transport.ko"   # AF_VSOCK transport on KVM
+assert_driver "vmw_pvscsi.ko"                   # VMware paravirtual SCSI (VMware targets)
 assert_driver "simpledrm.ko"                    # splash display on the UEFI GOP (drivers/gpu is stripped)
+assert_driver "loop.ko"                         # casper mounts the squashfs via loop
+assert_driver "overlay.ko"                      # casper rootfs overlay
+# Local filesystems the workflows mount (clone/customize) or resize
+assert_driver "ext4.ko"                         # most targets' root
+assert_driver "xfs.ko"                          # RHEL-style targets
+assert_driver "btrfs.ko"                        # e.g. Parrot OS targets (btrfs-progs installed for it)
+assert_driver "vfat.ko"                         # ESP (FAT16/32) + the EFI boot image
+assert_driver "isofs.ko"                        # the ISO itself (casper)
+assert_driver "nls_cp437.ko"                    # vfat short-name codepage
+assert_driver "nls_iso8859-1.ko"                # vfat iocharset default (hyphenated on noble)
+assert_driver "dm-mod.ko"                       # device-mapper base (built-in on noble)
+assert_driver "dm-crypt.ko"                     # LUKS targets (partclone + cryptsetup flows)
+assert_driver "md-mod.ko"                       # mdraid base (built-in on noble)
 echo "Multi-hypervisor driver whitelist OK."
 
 # Purge linux-firmware — Hyper-V uses synthetic drivers, no firmware blobs needed
@@ -120,11 +205,17 @@ EON
 # network to be "online".
 systemctl enable systemd-networkd 2>/dev/null || true
 
-# Bootloaders for UEFI/Secure Boot (Gen 2 only — no BIOS support)
-apt-get install -y --no-install-recommends grub-efi-amd64-signed shim-signed
+# NOTE: no bootloader packages in the chroot. The ISO's EFI image is built
+# from the BUILD HOST's signed loaders (build.sh), and targets get their
+# own GRUB installed from inside their chroot (VMCreate's install_grub.sh)
+# — a chroot grub-install would be broken anyway once the module trees are
+# stripped. The purge below cleans up if a future dependency ever drags
+# them back in (it is a no-op when they are absent).
 
-# Disk tools VMCreate drives remotely
-apt-get install -y --no-install-recommends partclone gdisk e2fsprogs dosfstools rsync lvm2 efibootmgr grub2-common util-linux parted psmisc
+# Disk tools VMCreate drives remotely (grub2-common was dropped: targets
+# get their own GRUB inside their chroot, and update-grub/grub-install
+# would be broken here anyway once the module trees are stripped)
+apt-get install -y --no-install-recommends sudo partclone gdisk e2fsprogs dosfstools rsync lvm2 efibootmgr util-linux parted psmisc
 
 # Install btrfs-progs for btrfs root filesystem support (e.g. Parrot OS)
 apt-get install -y --no-install-recommends btrfs-progs
@@ -212,6 +303,48 @@ printf '[Daemon]\nTheme=vmcreate\nShowDelay=0\n' > /etc/plymouth/plymouthd.conf
 # getty@tty1 would compete with it for the console (and there is no
 # password login on this ISO anyway).
 systemctl mask plymouth-quit.service plymouth-quit-wait.service getty@tty1.service
+
+# ── Trim before the final initrd build ──────────────────────────────
+# udev hardware DB: vendor/model strings and keymaps for physical input
+# devices — worthless in a VM (a keyboard works without it), but hwdb.bin
+# alone is 11.7 MB and mkinitramfs copies it into the initrd as well, so
+# it ships in BOTH images when left here.
+rm -rf /usr/lib/udev/hwdb.d /usr/lib/udev/hwdb.bin
+# lvm2/btrfs-progs install initramfs hooks that pull the lvm and btrfs
+# tools plus their modules into every initrd (~4 MB + xfs/btrfs modules).
+# casper boots from a squashfs on the ISO — no lvm/btrfs needed at initrd
+# stage. The tools stay in the rootfs for VMCreate's chroot workflows.
+rm -f /usr/share/initramfs-tools/hooks/lvm2 /usr/share/initramfs-tools/hooks/btrfs \
+      /usr/share/initramfs-tools/scripts/init-bottom/lvm2 \
+      /usr/share/initramfs-tools/scripts/local-premount/btrfs
+# Fonts: plymouth's theme uses only Ubuntu + Ubuntu Mono (asserted in the
+# initrd below). The plymouth hook copies font files into the initrd, so
+# this has to happen before the final rebuild to trim BOTH images. NOTE:
+# fonts-dejavu-core AND -mono must stay INSTALLED — casper Depends on
+# dejavu-core, and purging either cascades casper off the image (apt swaps
+# in fonts-liberation and removes casper). Removing the files keeps the
+# dependency satisfied with zero glyphs shipped.
+rm -rf /usr/share/fonts/truetype/dejavu
+rm -f /usr/share/fonts/truetype/ubuntu/UbuntuSans*.ttf
+# file(1): casper has a hard Depends: file on noble, so the packages stay
+# installed (a purge cascades casper off the image). But nothing in
+# casper's initramfs scripts or hooks actually runs file(1), and no hook
+# copies it or its DB into the initrd — VMCreate's only file(1) use runs
+# inside TARGET chroots. Drop the 8.1 MB database files instead; the
+# 31 KB /usr/bin/file binary stays to keep the dependency satisfied.
+# Consequence: /usr/bin/file exists but errors out ("could not find any
+# valid magic files") — harmless, nothing on the ISO invokes it.
+rm -f /usr/lib/file/magic.mgc /usr/share/misc/magic.mgc /usr/share/file/magic.mgc
+
+# initramfs trim hook: deletes xfs/btrfs/iscsi modules from the staged
+# initrd before mkinitramfs runs depmod (hooks run first). The zz- prefix
+# is cosmetic — CONFDIR hooks run after the system hooks regardless.
+install -m 755 /tmp/initramfs/zz-vmcreate-trim /etc/initramfs-tools/hooks/
+
+# Final initrd: the only generation that actually ships. Restore the trigger
+# first — update-initramfs -u honors update_initramfs=no. (-c from the kernel
+# postinst ignores it, which is why that first generation is unavoidable.)
+sed -i 's/^update_initramfs=.*/update_initramfs=yes/' /etc/initramfs-tools/update-initramfs.conf
 update-initramfs -u -k all
 
 # Fail the build unless the splash actually made it into the initrd.
@@ -227,6 +360,13 @@ for f in usr/share/plymouth/themes/vmcreate/vmcreate.plymouth \
         exit 1
     }
 done
+# ... and unless the trim hook actually removed what it promises (a silent
+# hook no-op ships 10 MB of dead modules, same failure class as the
+# wrong-path rm -rf's caught by assert_absent below).
+if grep -qE 'kernel/fs/(xfs|btrfs)/|ipr\.ko' /tmp/initrd.list; then
+    echo "ERROR: initrd trim hook did not fire (xfs/btrfs/ipr still present)" >&2
+    exit 1
+fi
 for unit in plymouth-quit.service plymouth-quit-wait.service; do
     state=$(systemctl is-enabled "$unit" 2>/dev/null || true)
     [ "$state" = "masked" ] || {
@@ -273,21 +413,88 @@ update-locale LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8
 
 # Clean up documentation, manpages, extra locales, and python remnants
 rm -rf /usr/share/doc/* /usr/share/man/* /usr/share/info/* /usr/lib/python* /usr/bin/python*
-#rm -rf /usr/share/locale/!(en|en_US|en_US.UTF-8)
+# Translations and locale machinery (after locale-gen above has run):
+# keep only en* message catalogs; /usr/share/i18n is only needed to RUN
+# locale-gen; gconv tables serve iconv, which nothing on the image uses.
+find /usr/share/locale -mindepth 1 -maxdepth 1 -type d ! -name 'en*' -exec rm -rf {} +
+rm -f /usr/share/locale/locale_alias
+rm -rf /usr/share/i18n /usr/lib/x86_64-linux-gnu/gconv
+# GRUB module trees (~16 MB uncompressed): targets install their OWN GRUB
+# from inside the target chroot (VMCreate's install_grub.sh apt/pacman/dnf
+# installs there); the live ISO boots via the signed loaders in
+# /usr/lib/grub/x86_64-efi-signed — a different package, kept.
+# The full purge below supersedes the rm (kept for belt and braces if the
+# package set ever changes).
+rm -rf /usr/lib/grub/x86_64-efi /usr/lib/grub/i386-pc /usr/share/grub
+# EFI loader packages: the ISO image is built from the build host's
+# signed loaders, so the chroot's copies are pure duplication (~4.4 MB of
+# netboot/CD loader variants alone).
+apt-get purge -y grub-efi-amd64-bin grub-efi-amd64-signed shim-signed grub2-common
 
-# The purges above remove reverse dependencies silently; make sure the
-# splash stack survived them.
-for pkg in plymouth plymouth-label; do
-    dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q "install ok installed" || {
-        echo "ERROR: splash: $pkg was removed by a later purge" >&2
+# ── Required-package asserts ────────────────────────────────────────
+# Purges and autoremove cascade reverse dependencies away silently
+# (casper was once taken by a fonts purge, sudo by an autoremove). This
+# is the set VMCreate actually drives once booted — asserted once here
+# and again after the autoremove below (one function so they cannot
+# drift apart):
+#   casper plymouth plymouth-label  the live boot itself and the splash
+#   sudo                            passwordless root for the vmcreate user
+#   openssh-server                  sshd behind sshd-vsock.socket
+#   linux-cloud-tools-<kver>        hv_kvp_daemon — VMCreate's key injection
+#   partclone lvm2 btrfs-progs      disk deployment tools
+#   tor                             tor+ APT sources on targets (Whonix)
+assert_required_packages() {
+    local pkg
+    local pkgs=(
+        casper plymouth plymouth-label sudo openssh-server
+        "linux-cloud-tools-${KVER_SHORT}"
+        partclone lvm2 btrfs-progs tor
+    )
+    for pkg in "${pkgs[@]}"; do
+        dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q "install ok installed" || {
+            echo "ERROR: required package $pkg is not installed (purge/autoremove cascade?)" >&2
+            exit 1
+        }
+    done
+}
+assert_required_packages
+
+# ── Negative asserts ────────────────────────────────────────────────
+# The positive asserts above prove required drivers exist; these prove the
+# stripped payload stayed gone. Both of this round's silent no-ops (zfs at
+# kernel/zfs rather than fs/zfs; magic.mgc at /usr/lib/file with no arch
+# folder) shipped because rm -rf on a wrong path fails silently — assert
+# here, after every cleanup has run, so a wrong path can never pass again.
+assert_absent() {
+    local leaked=""
+    for path; do
+        # shellcheck disable=SC2086
+        ls -d $path >/dev/null 2>&1 && leaked="$leaked $path"
+    done
+    if [ -n "$leaked" ]; then
+        echo "ERROR: stripped payload leaked into the image:$leaked" >&2
         exit 1
-    }
-done
+    fi
+}
+assert_absent /lib/modules/*/kernel/zfs /lib/modules/*/kernel/fs/zfs
+assert_absent /lib/modules/*/kernel/fs/nfs /lib/modules/*/kernel/fs/smb
+assert_absent /lib/modules/*/kernel/fs/9p /lib/modules/*/kernel/net/9p
+assert_absent /lib/modules/*/kernel/drivers/net/ethernet
+assert_absent /lib/modules/*/kernel/net/netfilter /lib/modules/*/kernel/net/sched
+assert_absent /usr/lib/udev/hwdb.bin /usr/lib/udev/hwdb.d
+assert_absent /usr/lib/file/magic.mgc /usr/share/misc/magic.mgc /usr/share/file/magic.mgc
+assert_absent /usr/lib/grub/x86_64-efi /usr/share/grub
+assert_absent /usr/share/fonts/truetype/dejavu
+echo "Negative asserts OK — stripped payload stayed gone."
 
 # More cleanup
 apt-get autoremove -y
 apt-get clean -y
 rm -rf /tmp/* /var/tmp/* /var/lib/apt/lists/* /var/cache/apt/archives/* /var/log/* /var/cache/debconf/*
+
+# autoremove cascades packages away just like the purges above — re-run
+# the required-package assert (the same function, so it cannot drift).
+assert_required_packages
 
 rm -f /var/lib/dbus/machine-id
 truncate -s 0 /etc/machine-id

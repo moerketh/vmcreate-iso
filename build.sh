@@ -97,6 +97,16 @@ fi
 sudo apt-get update
 sudo apt-get install -y debootstrap squashfs-tools xorriso grub-efi-amd64-bin grub-efi-amd64-signed shim-signed mtools dosfstools
 
+# The EFI image is built from the BUILD HOST's signed loaders, so the host
+# distro leaks into the ISO: Ubuntu's signed GRUB embeds /EFI/ubuntu (the
+# load-bearing graft below), but Debian's looks for /EFI/debian — such a
+# host would build fine and then drop to a grub> prompt at boot. Fail the
+# build here instead of at boot.
+sudo grep -aq '/EFI/ubuntu' /usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed || {
+    echo "ERROR: build host's signed GRUB does not search /EFI/ubuntu — wrong distro?" >&2
+    exit 1
+}
+
 # Bootstrap minimal Ubuntu — try multiple mirrors in case one is unreachable
 UBUNTU_MIRRORS=(
     "http://archive.ubuntu.com/ubuntu/"
@@ -171,6 +181,11 @@ sudo cp ./guest/* chroot/tmp/guest/
 sudo mkdir -p chroot/tmp/splash/vmcreate
 sudo cp ./splash/vmcreate/* chroot/tmp/splash/vmcreate/
 sudo sed -i "s|@VMCREATE_ISO_VERSION@|${BUILD_VERSION}|" chroot/tmp/splash/vmcreate/vmcreate.script
+# initramfs hook (installed by chroot_setup.sh from /tmp/initramfs/) that
+# trims xfs/btrfs/iscsi modules from the initrd — kept as a first-class
+# file like guest/ and splash/ so it is linted and visible in review.
+sudo mkdir -p chroot/tmp/initramfs
+sudo cp ./initramfs/* chroot/tmp/initramfs/
 sudo chroot chroot /bin/bash /tmp/chroot_setup.sh
 
 # Unmount
@@ -193,6 +208,13 @@ KERNEL_VERSION=$(ls chroot/boot/vmlinuz-* | head -n1 | cut -d- -f2-)
 sudo cp "chroot/boot/vmlinuz-${KERNEL_VERSION}" image/casper/vmlinuz
 sudo cp "chroot/boot/initrd.img-${KERNEL_VERSION}" image/casper/initrd
 
+# Measure as we build: sizes here are what the ISO download actually pays,
+# and toram pays the squashfs+initrd again at every boot. --apparent-size:
+# truncated/sparse files (efiboot.img) would otherwise report near zero.
+measure() { sudo du -h --apparent-size "$1" | cut -f1; }
+printf 'SIZE kernel  %8s  image/casper/vmlinuz\n' "$(measure image/casper/vmlinuz)"
+printf 'SIZE initrd  %8s  image/casper/initrd\n' "$(measure image/casper/initrd)"
+
 # Create manifest
 sudo chroot chroot dpkg-query -W --showformat='${Package} ${Version}\n' > image/casper/filesystem.manifest
 sudo cp image/casper/filesystem.manifest image/casper/filesystem.manifest-desktop
@@ -212,6 +234,7 @@ else
     echo "ERROR: Squashfs verification FAILED — the image is corrupt. Aborting." >&2
     exit 1
 fi
+printf 'SIZE squashfs %7s  image/casper/filesystem.squashfs\n' "$(measure image/casper/filesystem.squashfs)"
 
 # Print filesystem size
 printf $(sudo du -sx --block-size=1 chroot | cut -f1) > image/casper/filesystem.size
@@ -219,25 +242,49 @@ printf $(sudo du -sx --block-size=1 chroot | cut -f1) > image/casper/filesystem.
 # Access image directory
 cd image
 
-# Copy custom grub config
+# Copy custom grub config (goes into the EFI boot image and the ISO
+# filesystem below)
 sudo cp ../grub.cfg isolinux/grub.cfg
 
-# Copy EFI loaders
-sudo cp /usr/lib/shim/shimx64.efi.signed isolinux/bootx64.efi
-sudo cp /usr/lib/shim/mmx64.efi isolinux/mmx64.efi
-sudo cp /usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed isolinux/grubx64.efi
+# Ubuntu's signed grubx64.efi has an embedded early config that runs
+# `search --file /EFI/ubuntu/grub.cfg` on its *boot device* — the El Torito
+# virtual CD, i.e. this ISO filesystem — and drops to the GRUB prompt if it
+# finds nothing. The copy inside the appended FAT partition is never read,
+# so this graft is load-bearing (verified: removing it lands on `grub>`).
+mkdir -p EFI/ubuntu
+sudo cp ../grub.cfg EFI/ubuntu/grub.cfg
 
-# Create EFI boot image
-dd if=/dev/zero of=${WORK_DIR}/image/isolinux/efiboot.img bs=1M count=10
-mkfs.vfat -F 16 -n "EFI Boot" ${WORK_DIR}/image/isolinux/efiboot.img
+# Create EFI boot image — sized to fit: the fixed 10 MB image held ~4.5 MB
+# of loaders. Only its El Torito boot entry matters (see the EFI/ubuntu
+# graft above), so every MB here is a MB in the ISO download. The 256 KiB
+# headroom absorbs upstream loader size growth.
+EFI_SRC_FILES=(
+    /usr/lib/shim/shimx64.efi.signed
+    /usr/lib/shim/mmx64.efi
+    /usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed
+    isolinux/grub.cfg
+)
+# FAT16 needs >=4085 clusters, so force 512-byte clusters (-s 1) and keep a
+# 3 MiB floor (6144 clusters) — that is why the old fixed image was 10 MB.
+# -L: shim's loader is an update-alternatives symlink; measure the real file.
+EFI_IMG_BYTES=$(( $(du -bcL "${EFI_SRC_FILES[@]}" | tail -1 | cut -f1) + 256*1024 ))
+if [ "$EFI_IMG_BYTES" -lt 3145728 ]; then EFI_IMG_BYTES=3145728; fi
+EFI_IMG_BYTES=$(( (EFI_IMG_BYTES + 511) / 512 * 512 ))
+truncate -s "$EFI_IMG_BYTES" ${WORK_DIR}/image/isolinux/efiboot.img
+mkfs.vfat -F 16 -s 1 -n "EFI Boot" ${WORK_DIR}/image/isolinux/efiboot.img >/dev/null
+printf 'SIZE efiboot %8s  isolinux/efiboot.img\n' "$(measure "${WORK_DIR}/image/isolinux/efiboot.img")"
 mloop=$(sudo losetup --show -f ${WORK_DIR}/image/isolinux/efiboot.img)
 sudo mkdir -p /mnt/efi
 sudo mount "${mloop}" /mnt/efi
 sudo mkdir -p /mnt/efi/EFI/boot
 sudo mkdir -p /mnt/efi/EFI/ubuntu
-sudo cp ../chroot/usr/lib/shim/shimx64.efi.signed /mnt/efi/EFI/boot/bootx64.efi
-sudo cp ../chroot/usr/lib/shim/mmx64.efi /mnt/efi/EFI/boot/mmx64.efi
-sudo cp ../chroot/usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed /mnt/efi/EFI/boot/grubx64.efi
+sudo cp /usr/lib/shim/shimx64.efi.signed /mnt/efi/EFI/boot/bootx64.efi
+sudo cp /usr/lib/shim/mmx64.efi /mnt/efi/EFI/boot/mmx64.efi
+sudo cp /usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed /mnt/efi/EFI/boot/grubx64.efi
+# Not read by this ISO's boot path (GRUB finds /EFI/ubuntu/grub.cfg in
+# the ISO filesystem, grafted above) — kept only as a fallback config if
+# the partition is ever extracted and booted standalone (e.g. dd'd onto
+# a USB stick's ESP). Costs 805 bytes.
 sudo cp ./isolinux/grub.cfg /mnt/efi/EFI/ubuntu/grub.cfg
 sudo umount /mnt/efi
 sudo losetup -d "${mloop}"
@@ -248,7 +295,9 @@ sudo rm -rf /mnt/efi
 sudo rm -f md5sum.txt
 sudo /bin/bash -c "(find . -type f -print0 | xargs -0 md5sum | grep -v -e 'isolinux' -e 'md5sum.txt' > md5sum.txt)"
 
-# Create ISO (UEFI-only, no BIOS El Torito)
+# Create ISO (UEFI-only, no BIOS El Torito): a single El Torito boot entry
+# points straight at the appended GPT partition that carries efiboot.img,
+# so the image exists exactly once in the ISO.
 sudo xorriso \
   -as mkisofs \
   -iso-level 3 \
@@ -256,24 +305,16 @@ sudo xorriso \
   -J -J -joliet-long \
   -volid "VMCreate ISO" \
   -output "../${ISO_NAME}" \
-  -eltorito-alt-boot \
   -no-emul-boot \
-  -e isolinux/efiboot.img \
   -append_partition 2 28732ac11ff8d211ba4b00a0c93ec93b isolinux/efiboot.img \
   -appended_part_as_gpt \
   -iso_mbr_part_type a2a0d0ebe5b9334487c068b6b72699c7 \
-  -m "isolinux/efiboot.img" \
   -e '--interval:appended_partition_2:::' \
   -exclude isolinux \
-  -graft-points \
-      "/EFI/boot/bootx64.efi=isolinux/bootx64.efi" \
-      "/EFI/boot/mmx64.efi=isolinux/mmx64.efi" \
-      "/EFI/boot/grubx64.efi=isolinux/grubx64.efi" \
-      "/EFI/ubuntu/grub.cfg=isolinux/grub.cfg" \
-      "/isolinux/efiboot.img=isolinux/efiboot.img" \
-      "."
+  "."
 
 cd ..
 echo "ISO created at ${WORK_DIR}/${ISO_NAME}"
+printf 'SIZE iso     %8s  %s\n' "$(du -h "${ISO_NAME}" | cut -f1)" "$ISO_NAME"
 
 # cleanup_build runs automatically via the EXIT trap

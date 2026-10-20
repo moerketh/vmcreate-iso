@@ -6,20 +6,25 @@ on:
       - main
     tags:
       - 'v*'
+  workflow_dispatch:
 
 jobs:
+  # Pin the runner image: the build job bakes the BUILD HOST's signed
+  # grub/shim into the ISO (see build.sh), and the verify job asserts
+  # systemd-255/noble parity — ubuntu-latest would silently drift both
+  # when GitHub migrates the label (26.04 has been announced).
   lint:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
       - name: Install ShellCheck
         run: sudo apt-get install -y shellcheck
       - name: Run ShellCheck
-        run: shellcheck -S error autorun/*.sh lib/*.sh build.sh chroot_setup.sh
+        run: shellcheck -S error autorun/*.sh lib/*.sh build.sh chroot_setup.sh initramfs/*
 
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -32,7 +37,7 @@ jobs:
     # Catches the class of bugs that only show up at boot: unit files are
     # first-class sources here, so systemd itself (255, same as noble)
     # validates them on every push.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -65,7 +70,7 @@ jobs:
           ! echo "$out" | grep -qi 'ordering cycle'
 
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [lint, test, verify-units]
     permissions:
       actions: write
@@ -93,16 +98,21 @@ jobs:
       - name: Generate SHA256 checksum
         run: sha256sum ${{ steps.version.outputs.iso_name }} > ${{ steps.version.outputs.iso_name }}.sha256
       - name: Delete old artifacts
+        # Only same-name artifacts: runs from branches would otherwise wipe
+        # main's uploaded artifact too (the name is the same for every ref).
         if: github.ref_type == 'branch'
         uses: actions/github-script@v7
         with:
           script: |
+            const artifactName = `vmcreate-iso-${{ steps.version.outputs.version }}`;
             const { data: { artifacts } } = await github.rest.actions.listArtifactsForRepo({
               owner: context.repo.owner,
               repo: context.repo.repo,
               per_page: 100,
             });
             for (const artifact of artifacts) {
+              if (artifact.name !== artifactName) continue;
+              if (artifact.workflow_run?.id === context.runId) continue;
               console.log(`Deleting artifact: ${artifact.name} (${artifact.id})`);
               await github.rest.actions.deleteArtifact({
                 owner: context.repo.owner,
