@@ -40,6 +40,13 @@ sudo plymouth system-update --progress=42   # 1..100: determinate bar
 sudo plymouth system-update --progress=0    # back to the indeterminate sweep
 ```
 
+Typing at the console is an easter egg: any key cycles the splash through
+normal → letters flip upside down → red palette → letter rain, and printable
+characters tumble off the status line. Plymouth exposes keyboard input only
+(no pointer events), so the mouse cursor in the VM window is inert; Esc
+keeps toggling the console log. Host-driven messages and progress work in
+every state.
+
 The graphics are generated, not drawn: `python3 splash/render.py --preview`
 (Pillow) rewrites `splash/vmcreate/*.png` and the preview above. Plymouth
 renders on the built-in simpledrm (`drivers/gpu` is stripped), hence

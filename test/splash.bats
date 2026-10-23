@@ -24,8 +24,18 @@ THEME="$BATS_TEST_DIRNAME/../splash/vmcreate"
 }
 
 @test "generated graphics are real PNGs" {
-    for img in wordmark.png track.png bar.png cursor.png; do
-        head -c 8 "$THEME/$img" | od -An -tx1 | tr -d ' \n' | grep -q '^89504e470d0a1a0a$'
+    for img in $(find "$THEME" -name '*.png'); do
+        head -c 8 "$img" | od -An -tx1 | tr -d ' \n' | grep -q '^89504e470d0a1a0a$' \
+            || { echo "not a PNG: $img"; return 1; }
+    done
+}
+
+@test "letter sprites exist for both palettes" {
+    for dir in letters letters_red; do
+        [ $(ls "$THEME/$dir" | wc -l) -eq 7 ] || { echo "$dir has $(ls "$THEME/$dir" | wc -l) files, want 7"; return 1; }
+        for f in v m c r e a t; do
+            [ -f "$THEME/$dir/$f.png" ]
+        done
     done
 }
 
@@ -34,6 +44,7 @@ THEME="$BATS_TEST_DIRNAME/../splash/vmcreate"
     grep -q 'Plymouth.SetHideMessageFunction(' "$THEME/vmcreate.script"
     grep -q 'Plymouth.SetSystemUpdateFunction(' "$THEME/vmcreate.script"
     grep -q 'Plymouth.SetRefreshFunction(' "$THEME/vmcreate.script"
+    grep -q 'Plymouth.SetKeyboardInputFunction(' "$THEME/vmcreate.script"
 }
 
 @test "script carries the version placeholder build.sh stamps" {
