@@ -221,9 +221,13 @@ apt-get install -y --no-install-recommends sudo partclone gdisk e2fsprogs dosfst
 apt-get install -y --no-install-recommends btrfs-progs
 
 # Install Tor daemon for distros that route APT through Tor (e.g. Whonix).
-# NOT enabled at boot — VMCreate starts it over SSH when tor+ APT sources
-# are detected in the target VM's chroot.
+# Masked right away: tor's postinst enables tor.service (and with it the
+# sysvinit-compatible boot), so an unmasked daemon auto-starts at every ISO
+# boot — a VMCreate build-time assert fails the build otherwise. VMCreate
+# starts it over SSH by running the tor binary directly (systemd is not
+# involved), when tor+ APT sources are detected in the target VM's chroot.
 apt-get install -y --no-install-recommends tor
+systemctl mask tor.service tor.socket
 
 # ── SSH over vsock: the VMCreate control channel ─────────────────────
 # VMCreate connects without any NIC or IP discovery:
@@ -267,10 +271,14 @@ systemctl enable inject-ssh-key.service 2>/dev/null || true
 # TCP sshd must stay dead: openssh-server's postinst enables ssh.socket
 # on fresh installs, and a "deliberately not enabled" comment is not a
 # guarantee. Fail the build if either unit is anything but masked.
-for unit in ssh.socket ssh.service; do
+# Tor gets the same guarantee: its postinst enables tor.service, which
+# auto-starts the daemon at every ISO boot (observed via the S01tor
+# sysvinit symlinks); it must stay masked until VMCreate unmasks it for
+# tor+-routed targets.
+for unit in ssh.socket ssh.service tor.service tor.socket; do
     state=$(systemctl is-enabled "$unit" 2>/dev/null || true)
     [ "$state" = "masked" ] || {
-        echo "ERROR: TCP sshd unit $unit is '$state' (want masked)" >&2
+        echo "ERROR: TCP sshd/tor unit $unit is '$state' (want masked)" >&2
         exit 1
     }
 done
