@@ -129,6 +129,17 @@ for (i = 0; i < fall.max; i++) {
   fall.live[i] = 0; fall.vx[i] = 0; fall.vy[i] = 0;
 }
 
+# Uniform [0, 1). Older Plymouth (24.004 on noble) builds Math.Random()
+# from one 32-bit mrand48() but divides by the 64-bit LONG_MAX, so it never
+# exceeds ~2^-32: every "random" pick collapses to 0 (x = 0, glyph V).
+# Scale such values back up; newer Plymouth passes through unchanged.
+fun random() {
+  r = Math.Random();
+  if (r < 0.000001)
+    r = r * 4294967296;
+  return Math.Min(r, 0.999999);
+}
+
 # Place the letter sprites to tile exactly over the wordmark sprite.
 fun position_letters() {
   s = global.wordmark_scale;
@@ -218,10 +229,10 @@ fun rain_start() {
   w = global.layout_width;
   h = global.layout_height;
   for (i = 0; i < rain.count; i++) {
-    rain.x[i] = Math.Int(Math.Random() * Math.Max(1, w - 60));
-    rain.y[i] = Math.Int(Math.Random() * (h + 76)) - 76;   # pre-scattered: full rain at once
-    rain.vy[i] = 1.5 + Math.Random() * 2.5;
-    rain.glyph[i] = Math.Int(Math.Random() * 8);
+    rain.x[i] = Math.Int(random() * Math.Max(1, w - 60));
+    rain.y[i] = Math.Int(random() * (h + 76)) - 76;   # pre-scattered: full rain at once
+    rain.vy[i] = 1.5 + random() * 2.5;
+    rain.glyph[i] = Math.Int(random() * 8);
     img = letters.rain[rain.glyph[i]];
     if (global.palette == "red")
       img = letters.rain_red[rain.glyph[i]];
@@ -237,10 +248,10 @@ fun update_rain() {
   for (i = 0; i < rain.count; i++) {
     rain.y[i] += rain.vy[i];
     if (rain.y[i] > h) {
-      rain.x[i] = Math.Int(Math.Random() * Math.Max(1, w - 60));
+      rain.x[i] = Math.Int(random() * Math.Max(1, w - 60));
       rain.y[i] = -76;
-      rain.vy[i] = 1.5 + Math.Random() * 2.5;
-      rain.glyph[i] = Math.Int(Math.Random() * 8);
+      rain.vy[i] = 1.5 + random() * 2.5;
+      rain.glyph[i] = Math.Int(random() * 8);
       img = letters.rain[rain.glyph[i]];
       if (global.palette == "red")
         img = letters.rain_red[rain.glyph[i]];
@@ -262,8 +273,8 @@ fun spawn_fall(char) {
                                   global.message_y, 5);
       fall.sprites[i].SetOpacity(1);
       fall.live[i] = 1;
-      fall.vx[i] = (Math.Random() - 0.5) * 1.4;
-      fall.vy[i] = -1 - Math.Random() * 1.5;   # small hop up before the drop
+      fall.vx[i] = (random() - 0.5) * 1.4;
+      fall.vy[i] = -1 - random() * 1.5;   # small hop up before the drop
       return;
     }
   }
