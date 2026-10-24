@@ -5,9 +5,9 @@ export HOME=/root
 echo "vmcreate" > /etc/hostname
 
 cat << EOT > /etc/apt/sources.list
-deb http://archive.ubuntu.com/ubuntu/ noble main restricted universe multiverse
-deb http://archive.ubuntu.com/ubuntu/ noble-updates main restricted universe multiverse
-deb http://security.ubuntu.com/ubuntu/ noble-security main restricted universe multiverse
+deb https://archive.ubuntu.com/ubuntu/ noble main restricted universe multiverse
+deb https://archive.ubuntu.com/ubuntu/ noble-updates main restricted universe multiverse
+deb https://security.ubuntu.com/ubuntu/ noble-security main restricted universe multiverse
 EOT
 
 # Initrd compression: default is zstd level 1 — optimized for speed, ~44 MB.

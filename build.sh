@@ -37,6 +37,13 @@ if [ -f "$WORK_DIR/VERSION" ]; then
 else
     BUILD_VERSION="0.0.0-dev"
 fi
+# The version is interpolated into file names, a sed replacement and CI
+# outputs — reject anything but a semver-ish token up front instead of
+# letting a stray '&', '|' or '\' corrupt the build far downstream.
+if ! echo "$BUILD_VERSION" | grep -Eq '^[0-9]+(\.[0-9]+){0,2}(-[A-Za-z0-9.]+)?$'; then
+    echo "ERROR: VERSION contains invalid characters: '$BUILD_VERSION'" >&2
+    exit 1
+fi
 echo "Building vmcreate-iso version $BUILD_VERSION"
 
 ISO_NAME="vmcreate-${BUILD_VERSION}.iso"
@@ -107,21 +114,27 @@ sudo grep -aq '/EFI/ubuntu' /usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed |
     exit 1
 }
 
-# Bootstrap minimal Ubuntu — try multiple mirrors in case one is unreachable
+# Bootstrap minimal Ubuntu — try multiple mirrors in case one is unreachable.
+# https: apt verifies packages via GPG either way, but TLS hides the (host,
+# package list) metadata from passive observers. --keyring makes signature
+# verification explicit: debootstrap only warns (and proceeds unsigned)
+# when the suite keyring is missing on an unusual host — fail closed.
 UBUNTU_MIRRORS=(
-    "http://archive.ubuntu.com/ubuntu/"
-    "http://us.archive.ubuntu.com/ubuntu/"
-    "http://eu.archive.ubuntu.com/ubuntu/"
-    "http://de.archive.ubuntu.com/ubuntu/"
-    "http://nl.archive.ubuntu.com/ubuntu/"
-    "http://se.archive.ubuntu.com/ubuntu/"
-    "http://mirrors.kernel.org/ubuntu/"
+    "https://archive.ubuntu.com/ubuntu/"
+    "https://us.archive.ubuntu.com/ubuntu/"
+    "https://eu.archive.ubuntu.com/ubuntu/"
+    "https://de.archive.ubuntu.com/ubuntu/"
+    "https://nl.archive.ubuntu.com/ubuntu/"
+    "https://se.archive.ubuntu.com/ubuntu/"
+    "https://mirrors.kernel.org/ubuntu/"
 )
 
 DEBOOTSTRAP_OK=false
 for mirror in "${UBUNTU_MIRRORS[@]}"; do
     echo "Trying debootstrap with mirror: $mirror"
-    if sudo debootstrap --arch=amd64 --variant=minbase "$UBUNTU_VERSION" chroot "$mirror"; then
+    if sudo debootstrap --arch=amd64 --variant=minbase \
+        --keyring=/usr/share/keyrings/ubuntu-archive-keyring.gpg \
+        "$UBUNTU_VERSION" chroot "$mirror"; then
         DEBOOTSTRAP_MIRROR="$mirror"
         DEBOOTSTRAP_OK=true
         break
@@ -291,9 +304,11 @@ sudo losetup -d "${mloop}"
 sudo rm -rf /mnt/efi
 
 # Generate md5sum.txt
-# Remove any stale md5sum.txt first so it doesn't checksum itself
+# Exclude at the find level (not by grepping md5sum output, whose lines
+# start with the hash): the isolinux/ staging dir is not part of the ISO
+# filesystem and the receipt must not hash itself.
 sudo rm -f md5sum.txt
-sudo /bin/bash -c "(find . -type f -print0 | xargs -0 md5sum | grep -v -e 'isolinux' -e 'md5sum.txt' > md5sum.txt)"
+sudo /bin/bash -c "(find . -type f ! -path './isolinux/*' ! -name md5sum.txt -print0 | xargs -0 md5sum > md5sum.txt)"
 
 # Create ISO (UEFI-only, no BIOS El Torito): a single El Torito boot entry
 # points straight at the appended GPT partition that carries efiboot.img,
