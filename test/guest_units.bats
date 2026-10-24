@@ -52,8 +52,9 @@ load 'test_helper'
 
 @test "build masks TCP sshd and asserts it stays masked" {
     grep -q '^systemctl mask ssh.socket ssh.service$' "$PROJECT_ROOT/chroot_setup.sh"
-    grep -q "for unit in ssh.socket ssh.service" "$PROJECT_ROOT/chroot_setup.sh"
-    grep -q 'ERROR: TCP sshd unit' "$PROJECT_ROOT/chroot_setup.sh"
+    grep -q '^for unit in ssh.socket ssh.service tor.service tor.socket; do$' "$PROJECT_ROOT/chroot_setup.sh"
+    grep -q 'state=$(systemctl is-enabled "$unit" 2>/dev/null || true)' "$PROJECT_ROOT/chroot_setup.sh"
+    grep -q 'ERROR: TCP sshd/tor unit' "$PROJECT_ROOT/chroot_setup.sh"
 }
 
 @test "build deletes host keys and asserts none leak into the image" {
