@@ -65,7 +65,7 @@ THEME="$BATS_TEST_DIRNAME/../splash/vmcreate"
 }
 
 @test "build keeps plymouth alive and asserts the theme reached the initrd" {
-    grep -q '^systemctl mask plymouth-quit.service plymouth-quit-wait.service getty@tty1.service$' "$PROJECT_ROOT/chroot_setup.sh"
+    grep -q '^systemctl mask plymouth-quit.service plymouth-quit-wait.service getty@tty1.service autovt@.service$' "$PROJECT_ROOT/chroot_setup.sh"
     grep -q 'update-alternatives --set default.plymouth' "$PROJECT_ROOT/chroot_setup.sh"
     grep -q 'ERROR: splash: \$f missing from initrd' "$PROJECT_ROOT/chroot_setup.sh"
     grep -q 'assert_driver "simpledrm.ko"' "$PROJECT_ROOT/chroot_setup.sh"

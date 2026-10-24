@@ -308,9 +308,10 @@ update-alternatives --set default.plymouth "$THEME_DIR/vmcreate.plymouth"
 mkdir -p /etc/plymouth
 printf '[Daemon]\nTheme=vmcreate\nShowDelay=0\n' > /etc/plymouth/plymouthd.conf
 # Keep the splash up after boot: nothing may quit plymouth before power-off.
-# getty@tty1 would compete with it for the console (and there is no
-# password login on this ISO anyway).
-systemctl mask plymouth-quit.service plymouth-quit-wait.service getty@tty1.service
+# getty@tty1 would compete with it for the console, and there is no
+# password login on this ISO — mask the VT-switch autovt template too so
+# Ctrl+Alt+F2..F6 cannot spawn login prompts (logind's NAutoVTs default).
+systemctl mask plymouth-quit.service plymouth-quit-wait.service getty@tty1.service autovt@.service
 
 # ── Trim before the final initrd build ──────────────────────────────
 # udev hardware DB: vendor/model strings and keymaps for physical input
@@ -375,10 +376,10 @@ if grep -qE 'kernel/fs/(xfs|btrfs)/|ipr\.ko' /tmp/initrd.list; then
     echo "ERROR: initrd trim hook did not fire (xfs/btrfs/ipr still present)" >&2
     exit 1
 fi
-for unit in plymouth-quit.service plymouth-quit-wait.service; do
+for unit in plymouth-quit.service plymouth-quit-wait.service getty@tty1.service autovt@.service; do
     state=$(systemctl is-enabled "$unit" 2>/dev/null || true)
     [ "$state" = "masked" ] || {
-        echo "ERROR: splash: $unit is '$state' (want masked)" >&2
+        echo "ERROR: splash/console: $unit is '$state' (want masked)" >&2
         exit 1
     }
 done
