@@ -8,6 +8,11 @@ on:
       - 'v*'
   workflow_dispatch:
 
+# Least privilege by default: jobs inherit contents:read unless they
+# declare a narrower/wider block (only the build job writes).
+permissions:
+  contents: read
+
 jobs:
   # Pin the runner image: the build job bakes the BUILD HOST's signed
   # grub/shim into the ISO (see build.sh), and the verify job asserts
@@ -17,7 +22,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: Install ShellCheck
         run: sudo apt-get install -y shellcheck
       - name: Run ShellCheck
@@ -27,7 +32,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: Install BATS
         run: sudo apt-get install -y bats
       - name: Run tests
@@ -40,7 +45,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: systemd version (noble parity check)
         run: systemctl --version | head -1
       - name: Verify guest units with systemd-analyze
@@ -73,11 +78,10 @@ jobs:
     runs-on: ubuntu-24.04
     needs: [lint, test, verify-units]
     permissions:
-      actions: write
       contents: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: Install dependencies
         run: |
           sudo apt-get update
@@ -101,7 +105,9 @@ jobs:
         # Only same-name artifacts: runs from branches would otherwise wipe
         # main's uploaded artifact too (the name is the same for every ref).
         if: github.ref_type == 'branch'
-        uses: actions/github-script@v7
+        permissions:
+          actions: write
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         with:
           script: |
             const artifactName = `vmcreate-iso-${{ steps.version.outputs.version }}`;
@@ -123,7 +129,7 @@ jobs:
 
       - name: Upload ISO and checksum as artifact
         if: github.ref_type == 'branch'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: vmcreate-iso-${{ steps.version.outputs.version }}
           retention-days: 5
@@ -132,7 +138,7 @@ jobs:
             ${{ steps.version.outputs.iso_name }}.sha256
       - name: Create release and upload ISO with checksum
         if: github.ref_type == 'tag'
-        uses: ncipollo/release-action@v1
+        uses: ncipollo/release-action@339a81892b84b4eeb0f6e744e4574d79d0d9b8dd # v1
         with:
           artifacts: ${{ steps.version.outputs.iso_name }},${{ steps.version.outputs.iso_name }}.sha256
           prerelease: ${{ steps.version.outputs.prerelease }}
