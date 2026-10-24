@@ -219,7 +219,7 @@ fun rain_start() {
   h = global.layout_height;
   for (i = 0; i < rain.count; i++) {
     rain.x[i] = Math.Int(Math.Random() * Math.Max(1, w - 60));
-    rain.y[i] = Math.Int(-Math.Random() * h - 76);   # staggered above the screen
+    rain.y[i] = Math.Int(Math.Random() * (h + 76)) - 76;   # pre-scattered: full rain at once
     rain.vy[i] = 1.5 + Math.Random() * 2.5;
     rain.glyph[i] = Math.Int(Math.Random() * 8);
     img = letters.rain[rain.glyph[i]];
@@ -227,7 +227,7 @@ fun rain_start() {
       img = letters.rain_red[rain.glyph[i]];
     rain.sprites[i].SetImage(img);
     rain.sprites[i].SetPosition(rain.x[i], Math.Int(rain.y[i]), 0);
-    rain.sprites[i].SetOpacity(0.22);
+    rain.sprites[i].SetOpacity(0.3);
   }
 }
 
