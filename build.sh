@@ -197,7 +197,7 @@ sudo cp ./guest/* chroot/tmp/guest/
 # Plymouth theme (installed by chroot_setup.sh from /tmp/splash/); the
 # script gets the build version stamped into its footer.
 sudo mkdir -p chroot/tmp/splash/vmcreate
-sudo cp ./splash/vmcreate/* chroot/tmp/splash/vmcreate/
+sudo cp -r ./splash/vmcreate/. chroot/tmp/splash/vmcreate/
 sudo sed -i "s|@VMCREATE_ISO_VERSION@|${BUILD_VERSION}|" chroot/tmp/splash/vmcreate/vmcreate.script
 # initramfs hook (installed by chroot_setup.sh from /tmp/initramfs/) that
 # trims xfs/btrfs/iscsi modules from the initrd — kept as a first-class

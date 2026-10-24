@@ -314,7 +314,10 @@ done
 apt-get install -y --no-install-recommends plymouth plymouth-label
 THEME_DIR=/usr/share/plymouth/themes/vmcreate
 mkdir -p "$THEME_DIR"
-install -m 644 /tmp/splash/vmcreate/* "$THEME_DIR/"
+# Files first (install(1) skips directories), then the theme's asset
+# subdirectories (letters/, letters_red/) recursively.
+find /tmp/splash/vmcreate -maxdepth 1 -type f -exec install -m 644 {} "$THEME_DIR/" \;
+find /tmp/splash/vmcreate -mindepth 1 -maxdepth 1 -type d -exec cp -r {} "$THEME_DIR/" \;
 # Debian/Ubuntu select the theme via the default.plymouth alternative (the
 # initramfs hook reads it); plymouthd.conf covers the daemon in the rootfs.
 update-alternatives --install /usr/share/plymouth/themes/default.plymouth default.plymouth \
@@ -376,6 +379,7 @@ lsinitramfs "/boot/initrd.img-$KVER_SHORT" > /tmp/initrd.list
 for f in usr/share/plymouth/themes/vmcreate/vmcreate.plymouth \
          usr/share/plymouth/themes/vmcreate/vmcreate.script \
          usr/share/plymouth/themes/vmcreate/wordmark.png \
+         usr/share/plymouth/themes/vmcreate/letters/v.png \
          plymouth/script.so \
          plymouth/label-pango.so \
          usr/share/fonts/truetype/ubuntu/Ubuntu; do
