@@ -57,6 +57,13 @@ load 'test_helper'
     grep -q 'ERROR: TCP sshd/tor unit' "$PROJECT_ROOT/chroot_setup.sh"
 }
 
+@test "build asserts the sshd_config rewrites actually applied" {
+    grep -qF "sed -i 's/^#\?PasswordAuthentication .*/PasswordAuthentication no/' /etc/ssh/sshd_config" "$PROJECT_ROOT/chroot_setup.sh"
+    grep -qF "grep -q '^PasswordAuthentication no$' /etc/ssh/sshd_config" "$PROJECT_ROOT/chroot_setup.sh"
+    grep -qF "grep -q '^PubkeyAuthentication yes$' /etc/ssh/sshd_config" "$PROJECT_ROOT/chroot_setup.sh"
+    grep -qF "grep -q '^PermitRootLogin no$' /etc/ssh/sshd_config" "$PROJECT_ROOT/chroot_setup.sh"
+}
+
 @test "build deletes host keys and asserts none leak into the image" {
     grep -q '^rm -f /etc/ssh/ssh_host_\*$' "$PROJECT_ROOT/chroot_setup.sh"
     grep -q 'ERROR: SSH host keys leaked' "$PROJECT_ROOT/chroot_setup.sh"

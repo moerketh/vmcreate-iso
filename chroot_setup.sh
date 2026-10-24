@@ -246,6 +246,21 @@ apt-get install -y --no-install-recommends openssh-server
 sed -i 's/^#\?PasswordAuthentication .*/PasswordAuthentication no/' /etc/ssh/sshd_config
 sed -i 's/^#\?PubkeyAuthentication .*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
 sed -i 's/^#\?PermitRootLogin .*/PermitRootLogin no/' /etc/ssh/sshd_config
+# Assert the rewrites actually landed: sed exits 0 on zero matches, so a
+# stock-conffile format change would otherwise silently ship OpenSSH's
+# compiled defaults (PasswordAuthentication yes) on the vsock listener.
+grep -q '^PasswordAuthentication no$' /etc/ssh/sshd_config || {
+    echo "ERROR: sshd_config PasswordAuthentication rewrite did not apply" >&2
+    exit 1
+}
+grep -q '^PubkeyAuthentication yes$' /etc/ssh/sshd_config || {
+    echo "ERROR: sshd_config PubkeyAuthentication rewrite did not apply" >&2
+    exit 1
+}
+grep -q '^PermitRootLogin no$' /etc/ssh/sshd_config || {
+    echo "ERROR: sshd_config PermitRootLogin rewrite did not apply" >&2
+    exit 1
+}
 systemctl mask ssh.socket ssh.service
 
 # Host keys are generated per boot by the sshd-vsock-keygen oneshot
