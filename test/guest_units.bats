@@ -32,7 +32,7 @@ load 'test_helper'
 }
 
 @test "session service runs sshd -i on the socket" {
-    grep -q '^ExecStart=-/usr/sbin/sshd -i$' "$PROJECT_ROOT/guest/sshd-vsock@.service"
+    grep -q '^ExecStart=/usr/sbin/sshd -i$' "$PROJECT_ROOT/guest/sshd-vsock@.service"
     grep -q '^StandardInput=socket$' "$PROJECT_ROOT/guest/sshd-vsock@.service"
 }
 

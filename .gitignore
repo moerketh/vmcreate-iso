@@ -3,3 +3,4 @@ image/
 vmcreate.iso
 vmcreate-*.iso
 .sisyphus/*
+__pycache__/

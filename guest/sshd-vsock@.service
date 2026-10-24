@@ -10,7 +10,10 @@ Wants=sshd-vsock-keygen.service
 After=inject-ssh-key.service sshd-vsock-keygen.service
 
 [Service]
-ExecStart=-/usr/sbin/sshd -i
+# No leading '-': a failed sshd -i (config regression, missing runtime)
+# must surface as a failed unit, not silently "succeed" while clients
+# see dropped connections.
+ExecStart=/usr/sbin/sshd -i
 StandardInput=socket
 StandardOutput=socket
 StandardError=socket

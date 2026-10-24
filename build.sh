@@ -180,7 +180,12 @@ sudo chroot chroot mount -t sysfs none /sys
 sudo chroot chroot mount -t devpts none /dev/pts
 
 # Ensure DNS works inside the chroot (resolv.conf is often a dangling
-# symlink to systemd-resolved which isn't running in the chroot)
+# symlink to systemd-resolved which isn't running in the chroot).
+# NOTE: this file is NOT a build-time-only fix — nothing later removes
+# or replaces it (systemd-resolved is absent, networkd never writes
+# resolv.conf), so it ships in the squashfs as the runtime DNS posture
+# for the whole VM lifetime, including VMCreate-driven target-chroot
+# package installs. Do not "clean it up" without replacing it.
 sudo rm -f chroot/etc/resolv.conf
 printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' | sudo tee chroot/etc/resolv.conf > /dev/null
 
