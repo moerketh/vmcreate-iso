@@ -30,8 +30,12 @@ done
 [ -f "$POOL" ] || { log "WARN" "inject_ssh_key: KVP pool file never appeared"; exit 0; }
 
 # Retry reading the key. Never cache an empty result: if the daemon has not
-# written the key yet, re-read until it has.
+# written the key yet, re-read until it has. A matched name whose value is
+# empty or fails the key-material gate below is treated the same way — a
+# torn or partially written record must not end the scan with "not found"
+# while retries remain (the daemon may still be rewriting the pool).
 pubkey=""
+found=0
 for attempt in $(seq 1 "$KEY_WAIT_ATTEMPTS"); do
     index=0
     while true; do
@@ -41,7 +45,12 @@ for attempt in $(seq 1 "$KEY_WAIT_ATTEMPTS"); do
         if [ "$key" = "VMCREATE_SSH_PUBKEY" ]; then
             value_offset=$((offset + KEY_SIZE))
             pubkey=$(read_kvp_field "$POOL" "$value_offset" "$VALUE_SIZE")
-            break 2
+            case "$pubkey" in
+                ssh-*|ecdsa-*|sk-ssh-*|sk-ecdsa-*)
+                    found=1
+                    break 2
+                    ;;
+            esac
         fi
         index=$((index + 1))
     done
@@ -51,7 +60,7 @@ for attempt in $(seq 1 "$KEY_WAIT_ATTEMPTS"); do
     sleep "$POLL_INTERVAL"
 done
 
-if [ -z "$pubkey" ]; then
+if (( ! found )); then
     log "WARN" "inject_ssh_key: VMCREATE_SSH_PUBKEY not found — no SSH access this boot"
     exit 0
 fi

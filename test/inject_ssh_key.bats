@@ -39,6 +39,19 @@ run_inject() {
     [ ! -e "$TEST_TEMP_DIR/home/.ssh/authorized_keys" ]
 }
 
+@test "scans past a torn record (name set, value empty) to a later valid one" {
+    # Record 0 has the key name but an empty value (daemon mid-write);
+    # record 1 holds the real key. The scan must not stop at the torn
+    # record — a matched name whose value fails the gate is retried/past,
+    # honoring the "never cache an empty result" contract.
+    run_inject "$PROJECT_ROOT/test/fixtures/torn_key_pool"
+    [ "$status" -eq 0 ]
+
+    local auth="$TEST_TEMP_DIR/home/.ssh/authorized_keys"
+    [ -f "$auth" ]
+    [ "$(cat "$auth")" = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleTestKeyVmcreate user@host" ]
+}
+
 @test "gives up quietly when the pool file never appears (KVM: no KVP)" {
     KVP_POOL="$TEST_TEMP_DIR/no-such-pool" \
     VMCREATE_HOME="$TEST_TEMP_DIR/home" \
