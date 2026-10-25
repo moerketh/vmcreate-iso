@@ -57,9 +57,35 @@ job_block() {
     block=$(job_block sign-release)
     echo "$block" | grep -q "^    if: github.ref_type == 'tag'$"
     echo "$block" | grep -q '^    environment: release$'
-    # publishes the build's bytes; never checks out or runs repo code
-    ! echo "$block" | grep -q 'actions/checkout'
     echo "$block" | grep -q 'GITHUB_REF_NAME" != "v$VERSION"'
+}
+
+@test "sign-release checks out only release/ and keys/, without credentials" {
+    block=$(job_block sign-release)
+    [ "$(echo "$block" | grep -c 'actions/checkout')" -eq 1 ]
+    echo "$block" | grep -q '^          sparse-checkout-cone-mode: false$'
+    echo "$block" | grep -q '^          persist-credentials: false$'
+    # exactly the two patterns, nothing else
+    patterns=$(echo "$block" | awk '/sparse-checkout: \|/ {f=1; next} f && /^            / {print $1; next} f {exit}')
+    [ "$patterns" = "$(printf '/release/\n/keys/')" ]
+    ! echo "$block" | grep -Eq 'build\.sh|chroot_setup\.sh'
+}
+
+@test "ISO_SIGNING_KEY is only readable by the signing step" {
+    [ "$(grep -c 'secrets.ISO_SIGNING_KEY' "$WORKFLOW")" -eq 1 ]
+    job_block sign-release | grep -q 'ISO_SIGNING_KEY: ${{ secrets.ISO_SIGNING_KEY }}'
+    # no job-wide or workflow-wide exposure
+    ! grep -Eq '^ {0,4}[A-Za-z_]+: \$\{\{ secrets\.' "$WORKFLOW"
+}
+
+@test "release publishes the signed manifest after verifying it" {
+    block=$(job_block sign-release)
+    sign_line=$(echo "$block" | grep -n 'release/make-manifest.sh' | cut -d: -f1)
+    verify_line=$(echo "$block" | grep -n 'release/verify.sh' | cut -d: -f1)
+    publish_line=$(echo "$block" | grep -n 'ncipollo/release-action' | cut -d: -f1)
+    [ -n "$sign_line" ] && [ -n "$verify_line" ] && [ -n "$publish_line" ]
+    [ "$sign_line" -lt "$verify_line" ] && [ "$verify_line" -lt "$publish_line" ]
+    echo "$block" | grep -q 'manifest.json,vmcreate-${{ needs.build.outputs.version }}.manifest.json.sig'
 }
 
 @test "cleanup-artifacts is the only actions:write job and runs no repo code" {

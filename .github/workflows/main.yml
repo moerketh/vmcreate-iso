@@ -26,7 +26,7 @@ jobs:
       - name: Install ShellCheck
         run: sudo apt-get install -y shellcheck
       - name: Run ShellCheck
-        run: shellcheck -S error autorun/*.sh lib/*.sh build.sh chroot_setup.sh initramfs/*
+        run: shellcheck -S error autorun/*.sh lib/*.sh build.sh chroot_setup.sh initramfs/* release/*.sh
 
   test:
     runs-on: ubuntu-24.04
@@ -162,9 +162,11 @@ jobs:
             }
 
   sign-release:
-    # The only job with a write token. The `release` environment requires
-    # the maintainer's approval and only admits v* tags; no checkout, no
-    # build code — it publishes exactly the bytes the build job produced.
+    # The only job with a write token and the only one that can read
+    # ISO_SIGNING_KEY. The `release` environment requires the maintainer's
+    # approval and only admits v* tags (which only the maintainer can
+    # create). It checks out just release/ and keys/ — never build code —
+    # and signs and publishes exactly the bytes the build job produced.
     if: github.ref_type == 'tag'
     runs-on: ubuntu-24.04
     needs: build
@@ -181,15 +183,31 @@ jobs:
             echo "ERROR: tag $GITHUB_REF_NAME does not match VERSION $VERSION (want v$VERSION)" >&2
             exit 1
           fi
+      - name: Checkout signing scripts and trusted keys only
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          # non-cone patterns: cone mode would also pull every top-level
+          # file (the build scripts) into this job
+          sparse-checkout: |
+            /release/
+            /keys/
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
       - name: Download build artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: ${{ needs.build.outputs.artifact }}
       - name: Verify checksum of the downloaded ISO
         run: sha256sum -c "$ISO_NAME.sha256"
-      - name: Create release and upload ISO with checksum
+      - name: Sign release manifest
+        env:
+          ISO_SIGNING_KEY: ${{ secrets.ISO_SIGNING_KEY }}
+        run: bash release/make-manifest.sh "$ISO_NAME" "$VERSION" "$GITHUB_REF_NAME" "$GITHUB_SHA"
+      - name: Verify signed manifest (as VMCreate will)
+        run: bash release/verify.sh "vmcreate-$VERSION.manifest.json" "vmcreate-$VERSION.manifest.json.sig" "$ISO_NAME"
+      - name: Create release and upload ISO, checksum and signed manifest
         uses: ncipollo/release-action@339a81892b84b4eeb0f6e744e4574d79d0d9b8dd # v1
         with:
-          artifacts: ${{ needs.build.outputs.iso_name }},${{ needs.build.outputs.iso_name }}.sha256
+          artifacts: ${{ needs.build.outputs.iso_name }},${{ needs.build.outputs.iso_name }}.sha256,vmcreate-${{ needs.build.outputs.version }}.manifest.json,vmcreate-${{ needs.build.outputs.version }}.manifest.json.sig
           prerelease: ${{ needs.build.outputs.prerelease }}
           generateReleaseNotes: false

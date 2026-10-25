@@ -66,9 +66,38 @@ sudo apt-get install -y debootstrap squashfs-tools xorriso grub-efi-amd64-bin \
 ./build.sh
 ```
 
-Releases are tagged `v*`; CI builds, tests (bats) and attaches the ISO +
-sha256 to the GitHub release. VMCreate downloads whatever release is
-`latest` and replaces its cached copy when the version differs.
+Releases are tagged `v*`; CI builds, tests (bats) and publishes the ISO
+to the GitHub release. VMCreate downloads the newest stable release (a
+prerelease only while no stable one exists) and replaces its cached copy
+when the version differs.
+
+## Release signing
+
+Every release carries a signed manifest; VMCreate only boots an ISO whose
+manifest verifies against a public key it ships with.
+
+```
+vmcreate-2.1.0.iso
+vmcreate-2.1.0.iso.sha256           # integrity only (same origin as the ISO)
+vmcreate-2.1.0.manifest.json        # version, tag, commit, ISO size + sha256, key_id
+vmcreate-2.1.0.manifest.json.sig    # ECDSA P-256 / SHA-256, DER, over the exact manifest bytes
+```
+
+`key_id` is the first 16 hex of `sha256(DER SubjectPublicKeyInfo)`; the
+trusted public keys live in `keys/<key_id>.pub.pem` — the signing key and
+an offline backup, so a lost or leaked signing key can be replaced without
+breaking existing VMCreate installs. The private signing key exists only as
+the `ISO_SIGNING_KEY` secret of the `release` environment (maintainer
+approval, `v*` tags only; a tag ruleset lets only the maintainer create
+`v*` tags). In CI, `build` holds no write token and never sees the key;
+`sign-release` checks out only `release/` and `keys/`, signs the build's
+artifact and verifies the result before publishing.
+
+Verify a downloaded release by hand (openssl + coreutils only):
+
+```bash
+release/verify.sh vmcreate-2.1.0.manifest.json vmcreate-2.1.0.manifest.json.sig vmcreate-2.1.0.iso
+```
 
 ## Layout
 
@@ -81,6 +110,8 @@ initramfs/        initramfs hook trimming xfs/btrfs/iscsi modules from the
 splash/           Plymouth theme (vmcreate/) + render.py that generates it
 autorun/          inject_ssh_key.sh — the only boot-time logic
 lib/functions.sh  log + read_kvp_field (first-NUL KVP reader)
+release/          make-manifest.sh (CI signing) + verify.sh (VMCreate's checks)
+keys/             trusted release-signing public keys, named by key_id
 test/             bats: reader tests, inject_ssh_key tests (real script,
                   test hooks), guest unit and splash assertions; CI also runs
                   systemd-analyze verify on guest/
