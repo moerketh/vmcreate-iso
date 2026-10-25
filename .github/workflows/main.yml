@@ -74,11 +74,21 @@ jobs:
           echo "$out"
           ! echo "$out" | grep -qi 'ordering cycle'
 
+
+  # ── Release pipeline ────────────────────────────────────────────────
+  # build runs debootstrap, a root chroot and hundreds of third-party
+  # packages, so it holds no write token and never sees the signing key.
+  # It hands the exact ISO bytes on as an artifact; sign-release (tags
+  # only, behind the `release` environment's approval) publishes them
+  # without checking out or running any build code.
   build:
     runs-on: ubuntu-24.04
     needs: [lint, test, verify-units]
-    permissions:
-      contents: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      iso_name: ${{ steps.version.outputs.iso_name }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+      artifact: ${{ steps.version.outputs.artifact }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -99,21 +109,45 @@ jobs:
             *-*) echo "prerelease=true" >> $GITHUB_OUTPUT ;;
             *)   echo "prerelease=false" >> $GITHUB_OUTPUT ;;
           esac
+          # Tag runs get their own artifact name so cleanup-artifacts (which
+          # deletes same-name artifacts of other runs) can never delete an
+          # ISO that is still waiting for release approval.
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            echo "artifact=vmcreate-iso-${VERSION}-release" >> $GITHUB_OUTPUT
+          else
+            echo "artifact=vmcreate-iso-${VERSION}" >> $GITHUB_OUTPUT
+          fi
       - name: Generate SHA256 checksum
         run: sha256sum ${{ steps.version.outputs.iso_name }} > ${{ steps.version.outputs.iso_name }}.sha256
-      - name: Delete old artifacts
-        # Only same-name artifacts: runs from branches would otherwise wipe
-        # main's uploaded artifact too (the name is the same for every ref).
-        if: github.ref_type == 'branch'
-        permissions:
-          actions: write
+      - name: Upload ISO and checksum as artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ steps.version.outputs.artifact }}
+          # Tag runs may wait for release approval; keep them long enough.
+          retention-days: ${{ github.ref_type == 'tag' && 30 || 5 }}
+          if-no-files-found: error
+          path: |
+            ${{ steps.version.outputs.iso_name }}
+            ${{ steps.version.outputs.iso_name }}.sha256
+
+  cleanup-artifacts:
+    # Keeps only the newest branch artifact per version. Needs actions:write
+    # (job-level: GitHub has no step-level permissions) and runs no repo code.
+    if: github.ref_type == 'branch'
+    runs-on: ubuntu-24.04
+    needs: build
+    permissions:
+      actions: write
+    steps:
+      - name: Delete older same-name artifacts
         uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         with:
           script: |
-            const artifactName = `vmcreate-iso-${{ steps.version.outputs.version }}`;
+            const artifactName = '${{ needs.build.outputs.artifact }}';
             const { data: { artifacts } } = await github.rest.actions.listArtifactsForRepo({
               owner: context.repo.owner,
               repo: context.repo.repo,
+              name: artifactName,
               per_page: 100,
             });
             for (const artifact of artifacts) {
@@ -127,19 +161,35 @@ jobs:
               });
             }
 
-      - name: Upload ISO and checksum as artifact
-        if: github.ref_type == 'branch'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+  sign-release:
+    # The only job with a write token. The `release` environment requires
+    # the maintainer's approval and only admits v* tags; no checkout, no
+    # build code — it publishes exactly the bytes the build job produced.
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    needs: build
+    environment: release
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+      ISO_NAME: ${{ needs.build.outputs.iso_name }}
+    steps:
+      - name: Tag must match VERSION
+        run: |
+          if [ "$GITHUB_REF_NAME" != "v$VERSION" ]; then
+            echo "ERROR: tag $GITHUB_REF_NAME does not match VERSION $VERSION (want v$VERSION)" >&2
+            exit 1
+          fi
+      - name: Download build artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: vmcreate-iso-${{ steps.version.outputs.version }}
-          retention-days: 5
-          path: |
-            ${{ steps.version.outputs.iso_name }}
-            ${{ steps.version.outputs.iso_name }}.sha256
+          name: ${{ needs.build.outputs.artifact }}
+      - name: Verify checksum of the downloaded ISO
+        run: sha256sum -c "$ISO_NAME.sha256"
       - name: Create release and upload ISO with checksum
-        if: github.ref_type == 'tag'
         uses: ncipollo/release-action@339a81892b84b4eeb0f6e744e4574d79d0d9b8dd # v1
         with:
-          artifacts: ${{ steps.version.outputs.iso_name }},${{ steps.version.outputs.iso_name }}.sha256
-          prerelease: ${{ steps.version.outputs.prerelease }}
+          artifacts: ${{ needs.build.outputs.iso_name }},${{ needs.build.outputs.iso_name }}.sha256
+          prerelease: ${{ needs.build.outputs.prerelease }}
           generateReleaseNotes: false

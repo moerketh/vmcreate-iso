@@ -27,11 +27,51 @@ WORKFLOW="$PROJECT_ROOT/.github/workflows/main.yml"
     grep -q '^  contents: read$' "$WORKFLOW"
 }
 
-@test "only the build job escalates, to contents:write alone" {
-    # job-level blocks: the top-level default plus exactly one job override
-    [ "$(grep -c '^    permissions:$' "$WORKFLOW")" -eq 1 ]
-    grep -q '^      contents: write$' "$WORKFLOW"
-    # actions:write (artifact cleanup) is step-scoped, never job-wide
-    ! grep -q '^      actions: write$' "$WORKFLOW"
-    grep -q '^          actions: write$' "$WORKFLOW"
+# Print one job's block: from "  <job>:" up to the next top-level job key.
+job_block() {
+    awk -v job="  $1:" '
+        $0 == job { inside = 1; print; next }
+        inside && /^  [A-Za-z0-9_-]+:$/ { exit }
+        inside { print }
+    ' "$WORKFLOW"
+}
+
+@test "no step-level permissions (GitHub only honors workflow/job level)" {
+    # steps sit at 6 spaces ("      - name:"), their keys at 8
+    ! grep -Eq '^ {8,}permissions:' "$WORKFLOW"
+}
+
+@test "build job holds no write permission" {
+    block=$(job_block build)
+    [ -n "$block" ]
+    ! echo "$block" | grep -q 'permissions:'
+    ! echo "$block" | grep -q ': write'
+}
+
+@test "only sign-release gets contents:write" {
+    [ "$(grep -c '^      contents: write$' "$WORKFLOW")" -eq 1 ]
+    job_block sign-release | grep -q '^      contents: write$'
+}
+
+@test "sign-release runs only for tags, behind the release environment" {
+    block=$(job_block sign-release)
+    echo "$block" | grep -q "^    if: github.ref_type == 'tag'$"
+    echo "$block" | grep -q '^    environment: release$'
+    # publishes the build's bytes; never checks out or runs repo code
+    ! echo "$block" | grep -q 'actions/checkout'
+    echo "$block" | grep -q 'GITHUB_REF_NAME" != "v$VERSION"'
+}
+
+@test "cleanup-artifacts is the only actions:write job and runs no repo code" {
+    [ "$(grep -c '^      actions: write$' "$WORKFLOW")" -eq 1 ]
+    block=$(job_block cleanup-artifacts)
+    echo "$block" | grep -q '^      actions: write$'
+    echo "$block" | grep -q "^    if: github.ref_type == 'branch'$"
+    ! echo "$block" | grep -q 'actions/checkout'
+}
+
+@test "tag-run artifacts are named apart from branch artifacts" {
+    # cleanup deletes same-name artifacts of other runs; a release ISO
+    # waiting for approval must never share that name
+    grep -q 'artifact=vmcreate-iso-${VERSION}-release' "$WORKFLOW"
 }
